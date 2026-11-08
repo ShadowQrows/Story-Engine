@@ -1,0 +1,9 @@
+{
+  "id": "story-engine",
+  "name": "Story Engine",
+  "version": "2.18.0",
+  "minAppVersion": "1.5.0",
+  "description": "Write your chapters in a book layout and capture characters, places, connections and whereabouts straight from your text onto a map and timeline.",
+  "author": "theshirogames",
+  "isDesktopOnly": true
+}

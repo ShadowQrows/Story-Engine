@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>
+body{--background-primary:#1e1e1e;--background-secondary:#262626;--background-modifier-border:#3a3a3a;--background-modifier-hover:#ffffff12;--text-normal:#dcddde;--text-muted:#a8a8a8;--text-faint:#777;--text-accent:#9b8cff;--interactive-accent:#7b6cd9;--text-on-accent:#fff;--font-ui-small:13px;--font-ui-smaller:12px;--font-interface:system-ui;--font-text:Georgia;margin:0;background:var(--background-primary);color:var(--text-normal);font:14px system-ui;display:grid;grid-template-columns:1fr 1fr;height:100vh}
+#main,#side{overflow:auto;position:relative;display:flex;flex-direction:column}#side{border-left:1px solid #333}
+.workspace-leaf{flex:1;display:flex;flex-direction:column;min-height:0}.workspace-leaf:not(:last-child){display:none}
+.view-content-wrap{flex:1;display:flex;flex-direction:column;min-height:0}.view-content{flex:1;overflow:auto;min-height:0;padding:12px}
+.view-actions{display:flex;justify-content:flex-end;gap:4px;padding:4px 8px;flex:none}.markdown-source-view{flex:1;min-height:0;height:100%}.view-content:has(.markdown-source-view){display:flex;flex-direction:column;overflow:hidden}.markdown-source-view .cm-sizer{max-width:var(--file-line-width,700px);margin:0 auto;height:100%}.markdown-source-view .cm-editor{height:100%}.cm-editor{outline:none}.cm-line{padding:0 4px}
+button,select,input,textarea{background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:6px;font:inherit;padding:4px 8px}button.mod-cta{background:var(--interactive-accent);color:#fff}
+.modal{position:fixed;left:50%;top:15%;transform:translateX(-50%);background:#252525;border:1px solid #444;border-radius:10px;padding:16px;z-index:100;min-width:340px}
+#notices a{pointer-events:auto}
+.status-bar{position:fixed;right:0;bottom:0;display:flex;gap:8px;background:#222;padding:2px 6px;z-index:500;font-size:12px}
+</style>
+<link rel="stylesheet" href="build/styles.css">
+</head><body><div id="main"></div><div id="side"></div>
+<script src="build/harness.js"></script></body></html>
