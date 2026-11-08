@@ -17,7 +17,7 @@ if (mode === 'test') {
   fs.writeFileSync('tests/build/styles.css', css());
 } else {
   fs.mkdirSync('release/story-engine', { recursive: true });
-  await esbuild.build({ entryPoints: ['src/main.ts'], outfile: 'release/story-engine/main.js', bundle: true, format: 'cjs', platform: 'browser', target: 'es2021', external: ['obsidian', 'electron', '@codemirror/*', '@lezer/*'], loader: { '.woff2': 'binary', '.ttf': 'binary' }, logLevel: 'info', banner: { js: '/* Story Engine 2 — private Obsidian plugin. Bundled fonts: Libre Baskerville, UnifrakturMaguntia (SIL OFL 1.1). */' } });
+  await esbuild.build({ entryPoints: ['src/main.ts'], outfile: 'release/story-engine/main.js', bundle: true, format: 'cjs', platform: 'browser', target: 'es2021', external: ['obsidian', 'electron', '@codemirror/*', '@lezer/*'], loader: { '.woff2': 'binary', '.ttf': 'binary' }, logLevel: 'info', banner: { js: '/* Story Engine — an Obsidian plugin for writing novels. Bundled fonts: Libre Baskerville, UnifrakturMaguntia (SIL OFL 1.1). */' } });
   fs.copyFileSync('manifest.json', 'release/story-engine/manifest.json');
   fs.writeFileSync('release/story-engine/styles.css', css());
 }
