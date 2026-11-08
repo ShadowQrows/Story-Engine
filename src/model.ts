@@ -11,7 +11,7 @@
  *   flash=<scene or moment>  it's a flashback to that point (same slot as the target, marked as a flashback)
  * Where pieces are is recorded per scene ("from this scene on"), so the map can change scene by scene.
  */
-import { classify } from './manuscript';
+import { classify, STYLE_MARK } from './manuscript';
 
 /* ───────── Definitions: piece types, connection types, themes ───────── */
 
@@ -55,13 +55,15 @@ export interface ParaStyle { id: string; name: string; color: string /* on your 
 export interface BookLook {
   font: string; size: number; lineHeight: number; paraSpace: number; indent: number;
   titleSize: number; dropcapFont: string; dropcapSize: number; pageWidth: number; color: string;
+  /** A large first letter at the start of each chapter (off: the first paragraph is like any other opening paragraph). */
+  dropcap: boolean;
   /** Paper: the chapter shown as a book page (light background, dark text). */
   paper: boolean; paperBg: string; paperText: string;
   styles: ParaStyle[];
 }
-export const DEFAULT_LOOK: BookLook = { font: 'Libre Baskerville', size: 17, lineHeight: 1.5, paraSpace: 0, indent: 0.5, titleSize: 1.8, dropcapFont: 'Old English Text MT', dropcapSize: 3.9, pageWidth: 44, color: '', paper: false, paperBg: '#f3ecdc', paperText: '#231f1a', styles: [] };
+export const DEFAULT_LOOK: BookLook = { font: 'Libre Baskerville', size: 17, lineHeight: 1.5, paraSpace: 0, indent: 0.5, titleSize: 1.8, dropcapFont: 'Old English Text MT', dropcapSize: 3.9, dropcap: true, pageWidth: 44, color: '', paper: false, paperBg: '#f3ecdc', paperText: '#231f1a', styles: [] };
 /** Book details for exports. */
-export interface BookInfo { title: string; author: string; language: string; pageSize?: string }
+export interface BookInfo { title: string; author: string; language: string; pageSize?: string; /** PDF: wider margin on the binding side, alternating left/right (for a printed book) */ mirror?: boolean }
 /** Page sizes for the PDF and Word exports (inches), with margins that suit them. */
 export const PAGE_SIZES: Record<string, { label: string; w: number; h: number; top: number; bottom: number; inner: number; outer: number }> = {
   '6x9': { label: '6 × 9 in (trade paperback)', w: 6, h: 9, top: 0.75, bottom: 0.8, inner: 0.8, outer: 0.6 },
@@ -95,7 +97,7 @@ export interface SubMap { id: string; name: string; image: string | null; anchor
 /** A roof over a building place, drawn on the map the place is on. Hides what's inside until the POV is in there. */
 export interface Roof { x: number; y: number; w: number; h: number; pts?: Point[] /* custom shape; else the rectangle */; image: string | null }
 export const MAIN_MAP = 'main';
-export interface Moment { id: string; label: string; note: string; skip: boolean; skipText?: string /* how much time passed before it, e.g. “Two years later” (a time skip) */; gap?: number /* drawn width of a time skip's break on the timeline (looks only) */ }
+export interface Moment { id: string; label: string; note: string; skip: boolean; skipText?: string /* how much time passed before it, e.g. “Two years later” (a time skip) */; gap?: number /* drawn width of a time skip's break on the timeline (looks only) */; until?: string /* id of its last scene, when it ends before the next moment starts */ }
 /** What a time skip's break says: its own text, or the moment's name for skips made before 2.5. */
 export const skipLabel = (m: Moment) => m.skipText || m.label;
 export interface ProjectData {
@@ -113,11 +115,14 @@ export interface ProjectData {
   roofs: Record<string, Roof>;            // building place id → its roof
   areas: Record<string, Point[]>;         // place id → its area's shape on its map (default: a circle around it)
   aspects?: Record<string, number>;       // map id → its picture's width / height (so circles stay round)
+  /** What each id was last known as, so a link that breaks (a note that lost its id, a deleted scene setting) can be found again. */
+  names?: Record<string, { n: string; t: string }>;            // piece id → its name and type
+  sceneKeys?: Record<string, { f: string; i: number; t: string; m?: SceneMeta }>;   // scene id → its chapter file, its number in it, its opening words
   icons: Record<string, string>;          // place id → picture shown when the place folds into its marker
   lines: 'all' | 'selected';
   look: BookLook;
   view: number;                           // reading-order number of the scene the playhead is on (1-based)
-  ui: { dock: number; side: number; split: number; order: string[]; open: Record<string, boolean>; sideOpen: boolean; tab: 'pieces' | 'setup'; followMap?: boolean; setupClosed?: string[]; showPieces?: boolean; legend?: boolean; groupBelow?: number; catClosed?: string[]; cardClosed?: string[] };
+  ui: { dock: number; side: number; split: number; order: string[]; open: Record<string, boolean>; sideOpen: boolean; tab: 'pieces' | 'setup'; followMap?: boolean; setupClosed?: string[]; showPieces?: boolean; legend?: boolean; groupBelow?: number; catClosed?: string[]; cardClosed?: string[]; blankOk?: string[] /* maps kept as a blank sheet on purpose */ };
   /** Your own words for “scene” and “moment” (singular and plural), used everywhere in the plugin. */
   words?: Partial<Words>;
   book?: Partial<BookInfo>;
@@ -161,7 +166,7 @@ export function normalizeData(raw: unknown): ProjectData {
   if (Array.isArray(r.styles) && r.styles.length) d.styles = r.styles.filter((s: any) => s && s.id && s.label);
   // “Member of” is built in since 2.7 (it groups faction members): add it to older stories that don't have it.
   if (!d.styles.some(s => isMembership(s.label))) d.styles.push({ ...DEFAULT_STYLES.find(s => s.id === 'member')! });
-  if (r.book && typeof r.book === 'object') { const bk: Partial<BookInfo> = {}; for (const k of ['title', 'author', 'language', 'pageSize'] as const) if (typeof r.book[k] === 'string') bk[k] = r.book[k]; d.book = bk; }
+  if (r.book && typeof r.book === 'object') { const bk: Partial<BookInfo> = {}; for (const k of ['title', 'author', 'language', 'pageSize'] as const) if (typeof r.book[k] === 'string') bk[k] = r.book[k]; if (r.book.mirror === true) bk.mirror = true; d.book = bk; }
   if (r.words && typeof r.words === 'object') { const w: Partial<Words> = {}; for (const k of ['scene', 'scenes', 'moment', 'moments'] as const) if (typeof r.words[k] === 'string' && r.words[k].trim()) w[k] = r.words[k].trim(); if (Object.keys(w).length) d.words = w; }
   if (r.themes && typeof r.themes === 'object') for (const [k, v] of Object.entries(r.themes)) d.themes[k] = typeof v === 'string' ? { color: v, meaning: '' } : { color: String((v as any)?.color ?? '#fff'), meaning: String((v as any)?.meaning ?? '') };
   if (r.places && typeof r.places === 'object') for (const [k, v] of Object.entries(r.places as Record<string, any>)) if (v && Number.isFinite(v.x) && Number.isFinite(v.y)) d.places[k] = { x: clamp01(v.x), y: clamp01(v.y), ...(typeof v.map === 'string' && v.map !== MAIN_MAP ? { map: v.map } : {}) };
@@ -169,6 +174,8 @@ export function normalizeData(raw: unknown): ProjectData {
   if (r.roofs && typeof r.roofs === 'object') for (const [k, v] of Object.entries(r.roofs as Record<string, any>)) if (v && [v.x, v.y, v.w, v.h].every(Number.isFinite) && v.w > 0 && v.h > 0) d.roofs[k] = { x: clamp01(v.x), y: clamp01(v.y), w: Math.min(1, v.w), h: Math.min(1, v.h), image: typeof v.image === 'string' ? v.image : null, ...(ptsOk(v.pts) ? { pts: v.pts.map(cp) } : {}) };
   if (r.icons && typeof r.icons === 'object') for (const [k, v] of Object.entries(r.icons as Record<string, any>)) if (typeof v === 'string' && v) d.icons[k] = v;
   if (r.aspects && typeof r.aspects === 'object') { const a: Record<string, number> = {}; for (const [k, v] of Object.entries(r.aspects as Record<string, any>)) if (typeof v === 'number' && v > 0 && Number.isFinite(v)) a[k] = v; if (Object.keys(a).length) d.aspects = a; }
+  if (r.names && typeof r.names === 'object') { const n: NonNullable<ProjectData['names']> = {}; for (const [k, v] of Object.entries(r.names as Record<string, any>)) if (v && typeof v.n === 'string') n[k] = { n: v.n, t: String(v.t ?? '') }; d.names = n; }
+  if (r.sceneKeys && typeof r.sceneKeys === 'object') { const s: NonNullable<ProjectData['sceneKeys']> = {}; for (const [k, v] of Object.entries(r.sceneKeys as Record<string, any>)) if (v && typeof v.f === 'string' && Number.isFinite(v.i)) s[k] = { f: v.f, i: v.i, t: String(v.t ?? ''), ...(v.m && typeof v.m === 'object' ? { m: Object.fromEntries(Object.entries(v.m).filter(([, x]) => typeof x === 'string')) as SceneMeta } : {}) }; d.sceneKeys = s; }
   if (r.areas && typeof r.areas === 'object') for (const [k, v] of Object.entries(r.areas as Record<string, any>)) if (ptsOk(v)) d.areas[k] = (v as any[]).map(cp);
   if (typeof r.map === 'string') d.map = r.map;
   if (r.lines === 'selected') d.lines = 'selected';
@@ -177,7 +184,7 @@ export function normalizeData(raw: unknown): ProjectData {
     d.look = {
       font: typeof l.font === 'string' && l.font.trim() ? l.font : DEFAULT_LOOK.font, size: num(l.size, DEFAULT_LOOK.size, 10, 40), lineHeight: num(l.lineHeight, DEFAULT_LOOK.lineHeight, 1, 3),
       paraSpace: num(l.paraSpace, 0, 0, 3), indent: num(l.indent, 0.5, 0, 2), titleSize: num(l.titleSize, 1.8, 1, 4), dropcapFont: typeof l.dropcapFont === 'string' ? l.dropcapFont : DEFAULT_LOOK.dropcapFont,
-      dropcapSize: num(l.dropcapSize, 3.9, 0, 8), pageWidth: num(l.pageWidth, 44, 20, 120), color: typeof l.color === 'string' ? l.color : '',
+      dropcapSize: num(l.dropcapSize, 3.9, 0, 8), dropcap: l.dropcap !== false, pageWidth: num(l.pageWidth, 44, 20, 120), color: typeof l.color === 'string' ? l.color : '',
       paper: !!l.paper, paperBg: HEX.test(l.paperBg) ? l.paperBg : DEFAULT_LOOK.paperBg, paperText: HEX.test(l.paperText) ? l.paperText : DEFAULT_LOOK.paperText,
       styles: readStyles(l.styles),
     };
@@ -185,7 +192,7 @@ export function normalizeData(raw: unknown): ProjectData {
   if (r.ui && typeof r.ui === 'object') d.ui = { ...d.ui, ...r.ui, open: { ...d.ui.open, ...(r.ui.open ?? {}) } };
   d.view = num(r.view, 1, 1, 1e6);
   if (r.version === 3 || r.version === undefined && Array.isArray(r.moments) && r.moments.every((m: any) => 'skip' in m)) {
-    if (Array.isArray(r.moments)) d.moments = r.moments.filter((m: any) => m && typeof m.id === 'string').map((m: any) => { const label = String(m.label ?? 'Moment'), skipText = typeof m.skipText === 'string' && m.skipText.trim() ? m.skipText.trim() : m.skip ? label : ''; return { id: m.id, label, note: String(m.note ?? ''), skip: !!skipText, ...(skipText ? { skipText } : {}), ...(typeof m.gap === 'number' && m.gap > 0 ? { gap: Math.min(800, Math.max(16, m.gap)) } : {}) }; });
+    if (Array.isArray(r.moments)) d.moments = r.moments.filter((m: any) => m && typeof m.id === 'string').map((m: any) => { const label = String(m.label ?? 'Moment'), skipText = typeof m.skipText === 'string' && m.skipText.trim() ? m.skipText.trim() : m.skip ? label : ''; return { id: m.id, label, note: String(m.note ?? ''), skip: !!skipText, ...(skipText ? { skipText } : {}), ...(typeof m.gap === 'number' && m.gap > 0 ? { gap: Math.min(800, Math.max(16, m.gap)) } : {}), ...(typeof m.until === 'string' && m.until ? { until: m.until } : {}) }; });
     if (r.track && typeof r.track === 'object') for (const [k, v] of Object.entries(r.track)) if (Array.isArray(v)) d.track[k] = (v as any[]).filter(e => e && typeof e.s === 'string');
   } else {
     // A 2.0 story: moments were columns and positions were per moment. Keep them for the upgrade step.
@@ -194,6 +201,9 @@ export function normalizeData(raw: unknown): ProjectData {
     if (r.track && typeof r.track === 'object') for (const [k, v] of Object.entries(r.track)) if (Array.isArray(v)) legacyTrack[k] = (v as any[]).filter(e => e && typeof e.m === 'string');
     d.legacy = { moments: d.moments.map(m => m.id), track: legacyTrack };
   }
+  // Anything this version doesn't know (written by a newer one) is kept as it was, so saving never drops it.
+  const known = new Set([...Object.keys(d), 'book', 'words', 'aspects', 'legacy', 'version', 'names', 'sceneKeys']);
+  for (const [k, v] of Object.entries(r)) if (!known.has(k)) (d as unknown as Record<string, unknown>)[k] = v;
   return d;
 }
 
@@ -256,10 +266,55 @@ export function descriptionBlocks(body: string): DescBlock[] {
   return out;
 }
 /** Remove one description block (by its exact text) from a note, leaving everything else as it was. */
+/** Replace one description block with new text (it stays where it was; same rules as removing one). */
+export function replaceBlock(note: string, raw: string, text: string): string {
+  const fm = /^---\r?\n[\s\S]*?\r?\n---[^\n]*(?:\n|$)/.exec(note), start = fm ? fm[0].length : 0;
+  if (!text.trim()) return note;
+  for (let i = note.indexOf(raw, start); i >= 0; i = note.indexOf(raw, i + 1)) {
+    const before = note.slice(start, i), after = note.slice(i + raw.length);
+    if ((!before.trim() || /\n[ \t]*\r?\n[ \t]*$/.test(before)) && /^[ \t]*(?:\r?\n[ \t]*\r?\n|\s*$)/.test(after)) return note.slice(0, i) + text.trim() + after;
+  }
+  return note;
+}
 export function removeBlock(note: string, raw: string): string {
-  const i = note.indexOf(raw);
-  if (i < 0) return note;
-  return (note.slice(0, i).replace(/\n+$/, '\n') + note.slice(i + raw.length).replace(/^\n+/, '\n')).replace(/\n{3,}/g, '\n\n');
+  // Only in the note's text (never its properties), and only where it stands as a whole block of its own.
+  const fm = /^---\r?\n[\s\S]*?\r?\n---[^\n]*(?:\n|$)/.exec(note), start = fm ? fm[0].length : 0;
+  for (let i = note.indexOf(raw, start); i >= 0; i = note.indexOf(raw, i + 1)) {
+    const before = note.slice(start, i), after = note.slice(i + raw.length);
+    if ((!before.trim() || /\n[ \t]*\r?\n[ \t]*$/.test(before)) && /^[ \t]*(?:\r?\n[ \t]*\r?\n|\s*$)/.test(after)) {
+      const head = before.replace(/\s+$/, ''), rest = after.replace(/^\s+/, '');
+      return note.slice(0, start) + (head ? head + (rest ? '\n\n' : '\n') : before) + rest;
+    }
+  }
+  return note;
+}
+
+/* ───────── Chapter titles ───────── */
+
+/** Where a note's text starts: the line after its properties block (0 if it has none). */
+export function bodyStart(lines: string[]): number {
+  if (lines[0]?.trim() !== '---') return 0;
+  for (let i = 1; i < lines.length; i++) if (lines[i].trim() === '---' || lines[i].trim() === '...') return i + 1;
+  return lines.length;
+}
+/** The note with a “# TITLE” line at the top of its text, if it has no heading yet. */
+export function withTitle(text: string, title: string): string {
+  const lines = text.split('\n'), at = bodyStart(lines);
+  if (lines.slice(at).some(l => /^#\s/.test(l)) || !title.trim()) return text;
+  lines.splice(at, 0, `# ${title.trim().toUpperCase()}`);
+  return lines.join('\n');
+}
+/**
+ * A chapter's file was renamed: its title follows, if the title was the old name (or it had none).
+ * A title written differently from the file name is the writer's own and stays.
+ */
+export function retitle(text: string, oldTitle: string, title: string): string {
+  const lines = text.split('\n'), at = bodyStart(lines), h = lines.findIndex((l, k) => k >= at && /^#\s/.test(l));
+  if (h < 0) return withTitle(text, title);
+  const cur = lines[h].replace(/^#\s+/, '').trim();
+  if (cur.toLowerCase() !== oldTitle.trim().toLowerCase() || cur === title) return text;
+  lines[h] = `# ${cur === cur.toUpperCase() ? title.toUpperCase() : title}`;
+  return lines.join('\n');
 }
 
 /* ───────── Scenes inside a chapter ───────── */
@@ -330,14 +385,20 @@ export function buildTimeline(metas: SceneMeta[], moments: Moment[]): Timeline {
   const slots = Math.max(cursor + 1, n ? 1 : 0);
   const scenes: TimelineScene[] = metas.map((meta, i) => ({ order: i + 1, id: meta.id, meta, slot: slot[i]!, kind: kind[i], ref: ref[i] }));
   const starts = moments.filter(m => momentStart.has(m.id)).map(m => ({ moment: m, start: momentStart.get(m.id)! })).sort((a, b) => a.start - b.start);
-  const bands: MomentBand[] = starts.map((s, k) => ({ ...s, end: starts[k + 1]?.start ?? slots }));
+  // A moment runs until the next one starts, or ends sooner after its last scene (`until`).
+  const bands: MomentBand[] = starts.map((s, k) => {
+    let end = starts[k + 1]?.start ?? slots;
+    const u = s.moment.until ? byId.get(s.moment.until) : undefined, last = u !== undefined ? slot[u] : undefined;
+    if (last !== undefined && last >= s.start && last + 1 < end) end = last + 1;
+    return { ...s, end };
+  });
   const slotOfScene = new Map<string, number>();
   for (const s of scenes) if (s.id) slotOfScene.set(s.id, s.slot);
   const bySlot = new Map<number, TimelineScene[]>();
   for (const s of scenes) (bySlot.get(s.slot) ?? bySlot.set(s.slot, []).get(s.slot)!).push(s);
   return { scenes, slots, bands, slotOfScene, bySlot };
 }
-export const bandAt = (t: Timeline, slot: number): MomentBand | undefined => { let found: MomentBand | undefined; for (const b of t.bands) if (b.start <= slot) found = b; return found; };
+export const bandAt = (t: Timeline, slot: number): MomentBand | undefined => { let found: MomentBand | undefined; for (const b of t.bands) if (b.start <= slot && slot < b.end) found = b; return found; };
 
 /* ───────── Where pieces are ───────── */
 
@@ -352,6 +413,15 @@ export function whereAt(d: ProjectData, p: Piece, behaviour: Behaviour, slot: nu
     if (s >= bestSlot) { best = e; bestSlot = s; }
   }
   return best && !best.gone ? best : null;
+}
+/** Where a piece died, if it has died by this slot: the spot of its death, else the last spot it had (a landmark on the map). */
+export function deathSpot(d: ProjectData, pieceId: string, slot: number, slotOfScene: Map<string, number>): TrackEntry | null {
+  const sid = deathAt(d, pieceId, slot, slotOfScene); if (!sid) return null;
+  const list = d.track[pieceId] ?? [], death = list.find(e => e.s === sid), ds = slotOfScene.get(sid) ?? -1;
+  if (death && (death.place || death.pt)) return death;
+  let best: TrackEntry | null = null, bestSlot = -1;
+  for (const e of list) { const s = slotOfScene.get(e.s); if (s === undefined || s > ds || e.only || !(e.place || e.pt)) continue; if (s >= bestSlot) { best = e; bestSlot = s; } }
+  return best;
 }
 /** If the piece has died by this slot: the scene id of its death (the latest entry is a death). */
 export function deathAt(d: ProjectData, pieceId: string, slot: number, slotOfScene: Map<string, number>): string | null {
@@ -543,4 +613,68 @@ export function upgradeLegacy(metas: SceneMeta[], legacy: NonNullable<ProjectDat
     track[pid] = [...(track[pid] ?? []).filter(x => x.s !== out[i].id), { s: out[i].id!, ...rest }];
   }
   return { metas: out, track };
+}
+
+/* ───────── Broken links: finding them, and what they most likely belong to ───────── */
+
+/** A scene as the repair needs it: where it is, its opening words, its settings. */
+export interface SceneRef { id?: string; file: string; index: number; text: string; meta: SceneMeta }
+/** A note in the World folder that has no id (it lost it, or was made outside the plugin). */
+export interface LooseNote { path: string; name: string }
+export interface BrokenPiece { id: string; name: string | null; type: string | null; uses: number; to?: string /* a piece id */; note?: string /* a loose note's path */ }
+export interface BrokenScene { id: string; label: string | null; uses: number; to?: number /* index into the scenes given */ }
+export interface Broken { pieces: BrokenPiece[]; scenes: BrokenScene[] }
+
+/** The opening words of a scene, the way they're compared: first line of text, lower-case, spacing evened out. */
+export const sceneSnippet = (lines: string[]) => {
+  const l = lines.find(x => x.trim() && !/^\s*%%/.test(x) && !/^#{1,6}\s/.test(x) && !/^\s*(?:[✦⁂∗*•·]\s*){1,7}$/.test(x) && !/^\s*-{3,}\s*$/.test(x)) ?? '';
+  return l.replace(STYLE_MARK, '').replace(/[*_~=`>\[\]]/g, '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 60);
+};
+
+/**
+ * Ids the story's data points at that no piece or scene has any more, each with what it most likely is now:
+ * a piece by its remembered name (a piece of that name, or a note of that name that lost its id), a scene by its
+ * opening words (or, failing that, the same place in the same chapter).
+ */
+export function brokenLinks(d: ProjectData, pieces: Piece[], scenes: SceneRef[], loose: LooseNote[]): Broken {
+  const have = new Set(pieces.map(p => p.id)), uses = new Map<string, number>();
+  const use = (id: string | undefined) => { if (id && !have.has(id)) uses.set(id, (uses.get(id) ?? 0) + 1); };
+  for (const [id, list] of Object.entries(d.track)) { use(id); for (const e of list) use(e.place); }
+  for (const id of [...Object.keys(d.places), ...Object.keys(d.icons), ...Object.keys(d.areas), ...Object.keys(d.roofs)]) use(id);
+  for (const m of d.maps) use(m.anchor);
+  for (const s of scenes) { use(s.meta.pov); use(s.meta.where); }
+  const referenced = (id: string) => !!d.track[id] || !!d.places[id] || scenes.some(s => s.meta.pov === id || s.meta.where === id);
+  const out: Broken = { pieces: [], scenes: [] };
+  for (const [id, n] of uses) {
+    const known = d.names?.[id], name = known?.n ?? null, low = name?.toLowerCase();
+    const b: BrokenPiece = { id, name, type: known?.t ?? null, uses: n };
+    if (low) {
+      // A piece of that name now (with a new id nothing points at yet), else a note of that name with no id.
+      const same = pieces.filter(p => p.name.toLowerCase() === low || p.aliases.some(a => a.toLowerCase() === low));
+      const fresh = same.find(p => !referenced(p.id)) ?? same[0];
+      if (fresh) b.to = fresh.id;
+      else { const note = loose.find(x => x.name.toLowerCase() === low); if (note) b.note = note.path; }
+    }
+    out.pieces.push(b);
+  }
+  const sceneIds = new Set(scenes.map(s => s.id).filter(Boolean));
+  const sUses = new Map<string, number>();
+  const sUse = (id: string | undefined) => { if (id && !sceneIds.has(id) && !d.moments.some(m => m.id === id)) sUses.set(id, (sUses.get(id) ?? 0) + 1); };
+  for (const list of Object.values(d.track)) for (const e of list) sUse(e.s);
+  for (const m of d.moments) sUse(m.until);
+  for (const s of scenes) { sUse(s.meta.with); sUse(s.meta.flash); }
+  const taken = new Set<number>();
+  for (const [id, n] of sUses) {
+    const key = d.sceneKeys?.[id], b: BrokenScene = { id, label: key ? `${key.f.split('/').pop()!.replace(/\.md$/, '')} · ${key.i + 1}` : null, uses: n };
+    if (key) {
+      // A scene with no id of its own (its settings were deleted): first by its opening words, then by its place in the chapter.
+      const free = scenes.map((s, k) => ({ s, k })).filter(({ s, k }) => !s.id && !taken.has(k));
+      const hit = (key.t && free.find(({ s }) => s.text && (s.text === key.t || s.text.startsWith(key.t.slice(0, 30)) || key.t.startsWith(s.text.slice(0, 30))) && s.file === key.f))
+        ?? (key.t && free.find(({ s }) => s.text && s.text === key.t))
+        ?? free.find(({ s }) => s.file === key.f && s.index === key.i);
+      if (hit) { b.to = hit.k; taken.add(hit.k); }
+    }
+    out.scenes.push(b);
+  }
+  return out;
 }

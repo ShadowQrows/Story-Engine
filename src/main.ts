@@ -1,5 +1,6 @@
 import { App, Events, MarkdownPostProcessorContext, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath } from 'obsidian';
 import { Project, DATA_FILE } from './project';
+import * as M from './model';
 import { Capture } from './capture';
 import { storyEditorExtensions, refreshEditors } from './editor';
 import { WorldView, WORLD_VIEW, FolderPicker } from './world';
@@ -98,15 +99,31 @@ export default class StoryEnginePlugin extends Plugin {
     });
 
     this.app.workspace.onLayoutReady(() => void this.discover());
+    // Obsidian reads notes in the background at start-up (every note, after its index is rebuilt). A story looked at too early
+    // seems empty, so look again once Obsidian has finished: always the first time, later only if a story still looks empty.
+    let firstResolve = true;
+    this.registerEvent(this.app.metadataCache.on('resolved', () => {
+      let redid = false;
+      for (const p of this.projects.values()) if (firstResolve || !p.pieces.size || !p.chapters().length) { p.refresh(); redid = true; }
+      if (this.projects.size) firstResolve = false;
+      if (redid) { refreshEditors(); this.applyLooks(); this.redrawReading(); }
+    }));
     this.registerEvent(this.app.metadataCache.on('changed', f => { for (const p of this.projects.values()) if (p.contains(f.path)) p.indexFile(f); this.applyLooksSoon(); }));
     this.registerEvent(this.app.vault.on('create', f => { if (f instanceof TFile && f.name === DATA_FILE) void this.discover(); }));
+    // A story's data file changed on disk (sync, another device, a restored backup): use that version rather than saving over it.
+    this.registerEvent(this.app.vault.on('modify', f => { if (f instanceof TFile && f.name === DATA_FILE) void this.projects.get(f.parent && f.parent.path !== '/' ? f.parent.path : '')?.reloadIfChanged(); }));
     this.registerEvent(this.app.vault.on('delete', f => {
-      if (f instanceof TFile && f.name === DATA_FILE) { this.projects.delete(f.parent?.path === '/' ? '' : f.parent?.path ?? ''); this.changed(); return; }
+      if (f instanceof TFile && f.name === DATA_FILE) { const k = f.parent?.path === '/' ? '' : f.parent?.path ?? ''; this.projects.get(k)?.dispose(); this.projects.delete(k); this.changed(); return; }
       for (const p of this.projects.values()) if (p.contains(f.path)) p.forget(f.path);
     }));
     this.registerEvent(this.app.vault.on('rename', (f, old) => {
-      if (!(f instanceof TFile)) { void this.discover(); return; }
-      for (const p of this.projects.values()) { if (p.contains(old)) p.forget(old); if (p.contains(f.path)) { p.indexFile(f); void p.onRename(f, old); } }
+      // Every move is noted; once they stop arriving (a folder move sends one per file inside it), the stories are
+      // found again if a folder moved, and the paths they keep (map pictures, icons) follow every move.
+      this.moves.push([old, f.path, !(f instanceof TFile)]);
+      if (this.movesTimer !== null) window.clearTimeout(this.movesTimer);
+      this.movesTimer = window.setTimeout(() => { this.movesTimer = null; void this.settleMoves(); }, 400);
+      if (!(f instanceof TFile)) return;
+      for (const p of this.projects.values()) { if (p.contains(old)) p.forget(old); if (p.contains(f.path)) { p.indexFile(f); void p.onRename(f, old); void p.syncChapterTitle(f, old); } }
     }));
     this.registerEvent(this.app.workspace.on('editor-change', (_e, info) => {
       const f = info.file; if (!f) return;
@@ -147,25 +164,47 @@ export default class StoryEnginePlugin extends Plugin {
       if (!checking) void this.toggleManuscript(f).then(on => new Notice(on ? 'Book look on.' : 'Book look off.'));
       return true;
     } });
-    this.addCommand({ id: 'export-epub', name: 'Export e-book (EPUB)', callback: () => { const p = this.activeProject(); if (p) new BookExportModal(this.app, p, 'epub').open(); } });
-    this.addCommand({ id: 'export-pdf', name: 'Export PDF', callback: () => { const p = this.activeProject(); if (p) new BookExportModal(this.app, p, 'pdf').open(); } });
-    this.addCommand({ id: 'export-docx', name: 'Export Word document', callback: () => { const p = this.activeProject(); if (p) new BookExportModal(this.app, p, 'docx').open(); } });
+    this.addCommand({ id: 'export-epub', name: 'Export e-book (EPUB)', callback: () => { const p = this.activeProject(); if (p) new BookExportModal(this.app, p, 'epub').open(); else new Notice('Set up a story first: “Story Engine: Set up a story”.'); } });
+    this.addCommand({ id: 'export-pdf', name: 'Export PDF', callback: () => { const p = this.activeProject(); if (p) new BookExportModal(this.app, p, 'pdf').open(); else new Notice('Set up a story first: “Story Engine: Set up a story”.'); } });
+    this.addCommand({ id: 'export-docx', name: 'Export Word document', callback: () => { const p = this.activeProject(); if (p) new BookExportModal(this.app, p, 'docx').open(); else new Notice('Set up a story first: “Story Engine: Set up a story”.'); } });
     this.addCommand({ id: 'copy-chapter-web', name: 'Copy this chapter for web', checkCallback: checking => {
       const v = this.app.workspace.getActiveViewOfType(MarkdownView), f = v?.file, p = f && this.projectFor(f.path);
       if (!v || !f || !p?.isChapter(f)) return false;
       if (!checking) void copyChapterForWeb(p, v.editor.getValue(), p.chapterTitle(f));
       return true;
     } });
-    this.addCommand({ id: 'toggle-paper', name: 'Paper: show chapters as a book page', callback: () => { const p = this.activeProject(); if (p) p.setLook({ paper: !p.data.look.paper }); } });
+    this.addCommand({ id: 'toggle-paper', name: 'Paper: show chapters as a book page', callback: () => { const p = this.activeProject(); if (p) p.setLook({ paper: !p.data.look.paper }); else new Notice('Set up a story first: “Story Engine: Set up a story”.'); } });
     this.addCommand({ id: 'toggle-scene-bars', name: 'Show/hide scene bars', callback: async () => { this.settings.sceneBars = !this.settings.sceneBars; await this.saveSettings(); refreshEditors(); } });
     this.addSettingTab(new SettingsTab(this.app, this));
   }
 
   /* ───────── projects ───────── */
 
-  async discover() {
+  private moves: [string, string, boolean][] = [];
+  private movesTimer: number | null = null;
+  private async settleMoves() {
+    const moves = this.moves.splice(0);
+    let active = this.settings.active;
+    for (const [from, to] of moves) if (active !== null && (active === from || active.startsWith(from + '/'))) active = to + active.slice(from.length);
+    if (moves.some(m => m[2])) await this.discover();
+    for (const p of this.projects.values()) for (const [from, to] of moves) p.followMove(from, to);
+    if (active !== this.settings.active && active !== null && this.projects.has(active)) this.setActive(active);
+  }
+  private discovering: Promise<void> | null = null;
+  private rediscover = false;
+  /** Find the stories (folders with a data file). Never two at once: a second call waits for the first, then looks again. */
+  async discover(): Promise<void> {
+    if (this.discovering) { this.rediscover = true; return this.discovering; }
+    this.discovering = (async () => {
+      try { do { this.rediscover = false; await this.discoverOnce(); } while (this.rediscover); }
+      finally { this.discovering = null; }
+    })();
+    return this.discovering;
+  }
+  private async discoverOnce() {
     const found = new Set<string>();
-    for (const f of this.app.vault.getFiles()) if (f.name === DATA_FILE) found.add(f.parent && f.parent.path !== '/' ? f.parent.path : '');
+    // A story's own Backups and Exports folders never hold another story (a copy of a data file is just a copy).
+    for (const f of this.app.vault.getFiles()) if (f.name === DATA_FILE && !f.path.split('/').slice(0, -1).some(d => d === 'Backups' || d === 'Exports')) found.add(f.parent && f.parent.path !== '/' ? f.parent.path : '');
     for (const folder of found) {
       if (this.projects.has(folder)) continue;
       const p = new Project(this.app, folder);
@@ -182,11 +221,24 @@ export default class StoryEnginePlugin extends Plugin {
       }
       void p.timeline().then(() => refreshEditors());
     }
-    for (const k of [...this.projects.keys()]) if (!found.has(k)) this.projects.delete(k);
+    for (const k of [...this.projects.keys()]) if (!found.has(k)) { this.projects.get(k)?.dispose(); this.projects.delete(k); }
     if (this.settings.active && !this.projects.has(this.settings.active)) this.settings.active = null;
     refreshEditors();
     this.changed();
     this.applyLooks();
+    this.redrawReading();
+  }
+  /** Chapters open in Reading view: draw them again, so a page drawn before the plugin was ready gets the book look. */
+  redrawReading() {
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      const v = leaf.view; if (!(v instanceof MarkdownView) || v.getMode() !== 'preview') continue;
+      const f = v.file, p = f && this.projectFor(f.path);
+      if (!f || !p?.isChapter(f)) continue;
+      // rerender() alone keeps the page it drew before; clearing it first makes it draw (and style) every paragraph again.
+      const r = (v.previewMode as unknown as { renderer?: { clear?: () => void; set?: (text: string) => void } }).renderer, top = v.previewMode.getScroll();
+      if (r?.clear && r.set) { r.clear(); r.set(v.data); } else v.previewMode.rerender(true);
+      window.setTimeout(() => v.previewMode.applyScroll(top), 50);
+    }
   }
   projectFor(path: string): Project | null {
     let best: Project | null = null;
@@ -238,9 +290,10 @@ export default class StoryEnginePlugin extends Plugin {
         ensureLookbar(v, p, this.lookActions(p)); this.addHeaderButtons(v, p); syncChapters(v, p, this.chaptersOpen, () => { this.chaptersOpen = !this.chaptersOpen; this.applyLooks(); });
         applyVars(v.containerEl, lookVars(p.data.look, true, this.settings.draftZoom));
         v.containerEl.toggleClass('se-paper', p.data.look.paper);
+        v.containerEl.toggleClass('se-no-dropcap', p.data.look.dropcap === false);
         (v as unknown as { __sePaper?: HTMLElement }).__sePaper?.toggleClass('is-active', p.data.look.paper);
       }
-      else { removeLookbar(v); this.removeHeaderButtons(v); applyVars(v.containerEl, null); v.containerEl.removeClass('se-paper'); }
+      else { removeLookbar(v); this.removeHeaderButtons(v); applyVars(v.containerEl, null); v.containerEl.removeClass('se-paper', 'se-no-dropcap'); }
     }
     if (this.printStyle) this.printStyle.textContent = printCss(this.activeProject()?.data.look ?? null);
     // Reading view re-reads the note a moment after it changes; check the space then.
@@ -339,6 +392,10 @@ export default class StoryEnginePlugin extends Plugin {
 
   newStory() {
     new FolderPicker(this.app, async folder => {
+      // A story is one folder: never the whole vault, never inside another story or around one (their notes would mix).
+      if (folder.isRoot() || !folder.path || folder.path === '/') { new Notice('Choose a folder for the story, not the whole vault.'); return; }
+      const clash = [...this.projects.keys()].find(k => k !== folder.path && (k === '' || folder.path.startsWith(k + '/') || k.startsWith(folder.path + '/')));
+      if (clash !== undefined) { new Notice(`That folder ${clash === '' || folder.path.startsWith(clash + '/') ? 'is inside' : 'holds'} the story “${clash || 'vault'}”. Choose a folder of its own.`); return; }
       const p = new Project(this.app, folder.path);
       if (this.app.vault.getAbstractFileByPath(p.dataPath)) { this.setActive(folder.path); void this.openWorld(); return; }
       // Notes written before (an empty line between paragraphs) are converted to one line per paragraph when the story is found.
@@ -349,12 +406,24 @@ export default class StoryEnginePlugin extends Plugin {
       this.setActive(folder.path);
       // Offer the book look only to plain notes; anything already styled (a cover page, say) is left alone.
       const plain = this.app.vault.getMarkdownFiles().filter(f => { const fm = this.app.metadataCache.getFileCache(f)?.frontmatter; return p.contains(f.path) && !p.inWorld(f.path) && !p.isChapter(f) && !(fm?.cssclasses ?? fm?.cssclass); });
-      if (plain.length) new ConfirmModal(this.app, `Use the book look for ${plain.length} note${plain.length > 1 ? 's' : ''} in “${p.name}”?`,
-        `Chapters need the book look to get scene bars and capture: ${plain.slice(0, 6).map(f => f.basename).join(', ')}${plain.length > 6 ? '…' : ''}. Skip any that aren't chapters (cover pages, notes) and switch them on later with “Turn book look on/off for this note”.`,
-        'Use the book look', async () => { for (const f of plain) await this.toggleManuscript(f, true); }).open();
+      if (plain.length) new ConfirmModal(this.app, `Make ${plain.length === 1 ? 'this note a chapter' : `these ${plain.length} notes chapters`}?`,
+        `${plain.slice(0, 6).map(f => f.basename).join(', ')}${plain.length > 6 ? '…' : ''}. Each one gets the book look, with one line per paragraph. A copy of the original goes to ${p.folder}/Backups first.`,
+        'Make chapters', async () => { for (const f of plain) await this.toggleManuscript(f, true); window.setTimeout(() => { const np = this.projects.get(folder.path); if (np) void this.openFirstChapter(np); }, 600); }).open();
+      else window.setTimeout(() => { const np = this.projects.get(folder.path); if (np) void this.openFirstChapter(np); }, 600);
       new Notice(`“${p.name}” is set up as a story.`);
       void this.openWorld();
     }).open();
+  }
+  /** Stop using a folder as a story: its data file (and, if asked, its World folder) go to the trash. Chapters are never touched. */
+  async removeStory(p: Project, world: boolean) {
+    const data = this.app.vault.getAbstractFileByPath(p.dataPath), w = this.app.vault.getAbstractFileByPath(p.worldFolder);
+    if (data instanceof TFile) await this.app.fileManager.trashFile(data);
+    if (world && w) await this.app.fileManager.trashFile(w);
+    p.dispose(); this.projects.delete(p.folder);
+    if (this.settings.active === p.folder) this.settings.active = [...this.projects.keys()][0] ?? null;
+    await this.saveSettings();
+    this.changed(); this.applyLooks();
+    new Notice(`“${p.name}” is no longer a story. Its chapters are still in ${p.folder}.${world ? ' The World folder is in the trash.' : ''}`);
   }
   newChapter() {
     const p = this.activeProject();
@@ -379,7 +448,8 @@ export default class StoryEnginePlugin extends Plugin {
     // A note turning into a chapter switches to one line per paragraph (the original is kept in Backups).
     const p = this.projectFor(f.path);
     if (on && p) {
-      const text = await this.app.vault.read(f), next = toLinePerParagraph(text);
+      // A chapter's title is its “# ” line: a note without one (a new “Untitled” note, say) gets one from its file name.
+      const text = await this.app.vault.read(f), next = M.withTitle(toLinePerParagraph(text), p.chapterTitle(f));
       if (next !== text) { await p.backup(`${p.folder ? p.folder + '/' : ''}Backups/Before book look`, f, text); await this.app.vault.modify(f, next); }
     }
     return on;

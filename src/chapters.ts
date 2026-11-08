@@ -3,7 +3,8 @@
  * underneath it over the empty margin (the page doesn't move). Jump to any chapter, add one at the end,
  * or drag chapters into a new order (their files are renumbered). It stays open until the button is clicked again.
  */
-import { MarkdownView, Notice, TFile, setIcon } from 'obsidian';
+import { MarkdownView, Menu, Modal, Notice, TFile, setIcon } from 'obsidian';
+import { NameModal } from './world';
 import type { Project } from './project';
 import * as M from './model';
 import { classify, STYLE_MARK } from './manuscript';
@@ -26,13 +27,46 @@ export function syncChapters(view: MarkdownView, project: Project, open: boolean
   const top = look ? look.offsetHeight : 0;
   btn.style.top = `${top + 8}px`;
   let strip = stripOf(view);
-  if (!open) { strip?.remove(); return; }
+  watchFit(view);
+  if (!open) { strip?.remove(); fitPage(view); return; }
   if (!strip) strip = host.createDiv('se-chapters');
   strip.style.top = `${top + 44}px`;
+  fitPage(view);
   if (strip.contains(document.activeElement) || strip.hasClass('is-dragging-list')) return;
   void draw(strip, view, project);
 }
-export function removeChapters(view: MarkdownView) { stripOf(view)?.remove(); view.contentEl.querySelector(':scope > .se-chapters-btn')?.remove(); }
+export function removeChapters(view: MarkdownView) { stripOf(view)?.remove(); view.contentEl.querySelector(':scope > .se-chapters-btn')?.remove(); fitPage(view); }
+
+/**
+ * The chapter list floats over the left of the page. Only when it would cover the text does the page move right
+ * (just far enough, narrowing if there isn't room); with room to spare, the page stays exactly where it is.
+ */
+export function fitPage(view: MarkdownView) {
+  const host = view.contentEl, strip = stripOf(view);
+  for (const [sc, sz] of [['.cm-scroller', '.cm-sizer'], ['.markdown-preview-view', '.markdown-preview-sizer']] as const) {
+    const scroller = host.querySelector(sc) as HTMLElement | null, sizer = scroller?.querySelector(`:scope > ${sz}, :scope ${sz}`) as HTMLElement | null;
+    if (!scroller || !sizer) continue;
+    for (const k of ['margin-left', 'margin-right', 'max-width']) sizer.style.removeProperty(k);
+    if (!strip || !scroller.offsetParent) continue;
+    const cs = getComputedStyle(scroller), r = scroller.getBoundingClientRect();
+    const left = r.left + parseFloat(cs.paddingLeft), right = r.left + scroller.clientWidth - parseFloat(cs.paddingRight), width = right - left;
+    const max = parseFloat(getComputedStyle(sizer).maxWidth) || width, natural = left + Math.max(0, (width - Math.min(max, width)) / 2);
+    const target = strip.getBoundingClientRect().right + 16;
+    if (natural >= target) continue;
+    sizer.style.setProperty('margin-left', `${Math.max(0, target - left)}px`, 'important');
+    sizer.style.setProperty('margin-right', '0px', 'important');
+    sizer.style.setProperty('max-width', `${Math.max(240, Math.min(max, right - target))}px`, 'important');
+  }
+}
+/** Fit the page again whenever the note's pane changes size (dragging the World view's edge, say). */
+function watchFit(view: MarkdownView) {
+  const v = view as unknown as { __seFit?: ResizeObserver };
+  if (v.__seFit) return;
+  let raf = 0;
+  v.__seFit = new ResizeObserver(() => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; fitPage(view); }); });
+  v.__seFit.observe(view.contentEl);
+  view.register(() => v.__seFit?.disconnect());
+}
 
 async function draw(strip: HTMLElement, view: MarkdownView, project: Project) {
   const files = project.chapters();
@@ -52,6 +86,24 @@ async function draw(strip: HTMLElement, view: MarkdownView, project: Project) {
     const n = tl.scenes.filter(s => s.file.path === f.path).length;
     row.createSpan({ cls: 'se-ch-s', text: `${n} ${(n === 1 ? M.wordsOf(project.data).scene : M.wordsOf(project.data).scenes).toLowerCase()}` });
     row.onclick = async () => { if (view.file?.path !== f.path) await view.leaf.openFile(f); };
+    row.oncontextmenu = e => {
+      e.preventDefault();
+      const menu = new Menu();
+      menu.addItem(it => it.setTitle('Rename…').onClick(() => new NameModal(view.app, 'Rename chapter', project.chapterTitle(f), async v => {
+        try { await project.renameChapter(f, v); } catch (err) { new Notice((err as Error).message); return false; }
+        return true;
+      }).open()));
+      menu.addSeparator();
+      menu.addItem(it => it.setTitle('Delete').onClick(() => {
+        const m = new Modal(view.app); m.titleEl.setText(`Delete “${project.chapterTitle(f)}”?`);
+        m.contentEl.createEl('p', { text: 'It goes to the trash. Ctrl+Z in the World panel brings it back.' });
+        const acts = m.contentEl.createDiv('se-acts');
+        acts.createEl('button', { text: 'Cancel' }).onclick = () => m.close();
+        acts.createEl('button', { cls: 'mod-warning', text: 'Delete' }).onclick = () => { m.close(); void project.deleteChapter(f).then(() => draw(strip, view, project)); };
+        m.open();
+      }));
+      menu.showAtMouseEvent(e);
+    };
     row.addEventListener('dragstart', e => { dragged = f; strip.addClass('is-dragging-list'); row.addClass('is-dragging'); e.dataTransfer?.setData('text/plain', f.path); if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; });
     row.addEventListener('dragend', () => { dragged = null; strip.removeClass('is-dragging-list'); row.removeClass('is-dragging'); clearMarks(); });
     row.addEventListener('dragover', e => {
@@ -67,6 +119,8 @@ async function draw(strip: HTMLElement, view: MarkdownView, project: Project) {
       order.splice(order.indexOf(f) + (after ? 1 : 0), 0, dragged);
       dragged = null;
       strip.addClass('is-busy');
+      const before = project.chapters();
+      project.checkpoint({ undo: () => project.reorderChapters(before), redo: () => project.reorderChapters(order) });
       try { await project.reorderChapters(order); } catch (err) { new Notice(`Couldn't reorder: ${(err as Error).message}`); }
       strip.removeClass('is-busy', 'is-dragging-list');
       await draw(strip, view, project);
@@ -74,7 +128,7 @@ async function draw(strip: HTMLElement, view: MarkdownView, project: Project) {
   });
   if (!files.length) list.createDiv({ cls: 'se-empty', text: 'No chapters yet.' });
   list.scrollTop = scroll;
-  const add = inner.createEl('button', { cls: 'se-ch-add', text: '+ New chapter' });
+  const add = inner.createEl('button', { cls: 'se-ch-add', text: 'New chapter' });
   add.onclick = () => {
     const box = inner.createDiv('se-ch-new'); add.remove();
     const input = box.createEl('input'); input.placeholder = 'Chapter title, then Enter (Esc to cancel)';

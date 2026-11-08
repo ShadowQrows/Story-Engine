@@ -2,6 +2,7 @@
 const test = require('node:test'); const assert = require('assert/strict');
 const B = require('./build/book.cjs'); const Z = require('./build/zip.cjs'); const M = require('./build/model.cjs');
 const { execFileSync } = require('child_process'); const fs = require('fs'); const os = require('os'); const path = require('path');
+const PY = process.platform === 'win32' ? 'python' : 'python3'; // on Windows, python3 is a Store shortcut
 
 // Since 2.11 one line is one paragraph; the empty line before "She stood up." is a line of space.
 const PROLOGUE = `---
@@ -43,7 +44,7 @@ test('a chapter becomes title, styled interlude, drop-cap paragraph, paragraphs 
 const look = () => ({ ...M.DEFAULT_LOOK, styles: [{ id: 'epigraph', name: 'Epigraph', color: '#c9b98f', paperColor: '#6b4f2a', italic: true, align: 'center', size: 0.95 }] });
 const meta = { title: 'ASOIAF Sample', author: 'A. Writer', language: 'en', id: '1b4e28ba-2fa1-11d2-883f-0016d3cca427', modified: new Date('2026-11-05T10:00:00Z') };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'se-book-'));
-function unzip(bytes) { const f = path.join(tmp, 'x.zip'); fs.writeFileSync(f, bytes); const out = execFileSync('python3', ['-c', `
+function unzip(bytes) { const f = path.join(tmp, 'x.zip'); fs.writeFileSync(f, bytes); const out = execFileSync(PY, ['-c', `
 import zipfile, sys, json
 z = zipfile.ZipFile(sys.argv[1]); bad = z.testzip()
 print(json.dumps({'names': z.namelist(), 'bad': bad, 'first': z.infolist()[0].filename, 'first_compress': z.infolist()[0].compress_type, 'files': {n: z.read(n).decode('utf-8', 'replace') for n in z.namelist() if not n.endswith('.woff2')}}))`, f]); return JSON.parse(out); }
@@ -71,12 +72,12 @@ test('EPUB: mimetype first and stored, the book look in its stylesheet, the styl
   assert.match(css, /p\.dropcap::first-letter \{ float: left; font-family: "Old English Text MT", "MM Blackletter", serif; font-size: 3\.9em;/);
   assert.match(z.files['OEBPS/content.opf'], /<dc:creator>A\. Writer<\/dc:creator>/);
   // Every XML file is well-formed.
-  for (const [n, txt] of Object.entries(z.files)) if (/\.(xhtml|opf|ncx|xml)$/.test(n)) execFileSync('python3', ['-c', 'import sys, xml.dom.minidom; xml.dom.minidom.parseString(sys.stdin.read().encode())'], { input: txt });
+  for (const [n, txt] of Object.entries(z.files)) if (/\.(xhtml|opf|ncx|xml)$/.test(n)) execFileSync(PY, ['-c', 'import sys, xml.dom.minidom; xml.dom.minidom.parseString(sys.stdin.read().encode())'], { input: txt });
 });
 
 test('Word: real styles (Heading 1 chapters, body text, the Epigraph style with its colour), readable by python-docx', () => {
   const f = path.join(tmp, 'book.docx'); fs.writeFileSync(f, B.buildDocx(meta, [B.chapterBlocks(PROLOGUE, 'Prologue')], look()));
-  const out = JSON.parse(execFileSync('python3', ['-c', `
+  const out = JSON.parse(execFileSync(PY, ['-c', `
 import docx, sys, json
 d = docx.Document(sys.argv[1])
 ps = [{'style': p.style.name, 'text': p.text, 'italic': [r.italic for r in p.runs], 'bold': [r.bold for r in p.runs]} for p in d.paragraphs]
@@ -117,7 +118,7 @@ test('empty lines are space: the line kind, the blocks, EPUB margin, Word spacin
   const w = B.webChapter(ch, l);
   assert.match(w.html, /First paragraph\.<\/p>\n<p>&nbsp;<\/p>\n<p>&nbsp;<\/p>\n<p>After two/);
   const f = path.join(tmp, 'gap.docx'); fs.writeFileSync(f, B.buildDocx(meta, [ch], l));
-  const before = JSON.parse(execFileSync('python3', ['-c', `
+  const before = JSON.parse(execFileSync(PY, ['-c', `
 import docx, sys, json
 d = docx.Document(sys.argv[1]); print(json.dumps([[p.text, p.paragraph_format.space_before.pt if p.paragraph_format.space_before is not None else None] for p in d.paragraphs]))`, f]));
   const sb = before.find(x => x[0] === 'After two lines of space.')[1];
@@ -130,7 +131,7 @@ test('2.10 a style can carry space before and after (lines), in every export', (
   const ch = B.chapterBlocks('# T\n%%style:epigraph%% *~Bells.~*\nThe chamber.\n', 'T');
   assert.match(B.webChapter(ch, l).html, /~Bells\.~<\/em><\/p>\n<p>&nbsp;<\/p>\n<p>The chamber/);
   const f = path.join(tmp, 'st.docx'); fs.writeFileSync(f, B.buildDocx(meta, [ch], l));
-  const after = execFileSync('python3', ['-c', 'import docx, sys; d = docx.Document(sys.argv[1]); print(d.styles["Epigraph"].paragraph_format.space_after.pt)', f]).toString().trim();
+  const after = execFileSync(PY, ['-c', 'import docx, sys; d = docx.Document(sys.argv[1]); print(d.styles["Epigraph"].paragraph_format.space_after.pt)', f]).toString().trim();
   assert.ok(Math.abs(Number(after) - 17 * 0.75 * 1.5) < 0.06, `one line after (${after}pt)`);
   assert.equal(M.normalizeData({ look: { styles: [{ id: 'a', spaceBefore: 2, spaceAfter: 99 }] } }).look.styles[0].spaceAfter, 10);
 });
@@ -146,7 +147,7 @@ test('Word drop cap: a box the text flows around, lines tall, with the letter at
   assert.ok(z.names.includes('word/fonts/font3.odttf') && z.names.includes('word/fontTable.xml'));
   assert.match(z.files['word/fontTable.xml'], /<w:font w:name="UnifrakturMaguntia">.*<w:embedRegular r:id="rIdF3" w:fontKey="\{[0-9A-F-]+\}"\/>/);
   // The embedded font is the real one, scrambled only in its first 32 bytes (as Word expects).
-  const raw = execFileSync('python3', ['-c', 'import zipfile,sys; sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read("word/fonts/font3.odttf"))', path.join(tmp, 'x.zip')]);
+  const raw = execFileSync(PY, ['-c', 'import zipfile,sys; sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read("word/fonts/font3.odttf"))', path.join(tmp, 'x.zip')]);
   assert.equal(raw.length, ttf.blackletter.length); assert.ok(raw.subarray(32).equals(ttf.blackletter.subarray(32))); assert.ok(!raw.subarray(0, 32).equals(ttf.blackletter.subarray(0, 32)));
   // Without a measured fit (or with your own font installed) nothing is embedded for the drop cap.
   const z2 = unzip(B.buildDocx(meta, [B.chapterBlocks(PROLOGUE, 'Prologue')], l, ttf, { ...fit, font: 'Old English Text MT', embedded: false }));

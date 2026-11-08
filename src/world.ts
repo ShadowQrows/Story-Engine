@@ -4,17 +4,20 @@
  *   column (right)          Pieces tab (catalog + card) · Setup tab (types, connection types, themes, moments, map)
  *   timeline dock (bottom)  scenes in story time, named moments, time skips, events, story lines, playhead
  */
-import { FuzzySuggestModal, ItemView, MarkdownView, Modal, Notice, TFile, TFolder, WorkspaceLeaf, setIcon } from 'obsidian';
+import { App, FuzzySuggestModal, ItemView, MarkdownView, Menu, Modal, Notice, TFile, TFolder, WorkspaceLeaf, setIcon } from 'obsidian';
 import { BUILTIN_ICONS, BUILTIN_PREFIX, builtinSrc } from './icons';
 import * as M from './model';
 import type { Project, SceneEntry, StoryTimeline } from './project';
 import { mapSrc } from './capture';
+import { tip } from './tip';
 import type StoryEnginePlugin from './main';
 
 export const WORLD_VIEW = 'story-engine-world';
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const svgNs = 'http://www.w3.org/2000/svg';
+/** What a piece dragged from the Pieces list carries (its id). */
+const PIECE_DRAG = 'application/x-story-engine-piece';
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp', 'avif']);
 const POV_COLORS = ['#f2c94c', '#6ea2f0', '#ff7a8a', '#5fd4a2', '#c792ea', '#ff9f43', '#4dd0e1', '#e57373', '#aed581', '#f48fb1', '#90caf9', '#ffd180'];
 /** The right-hand column never gets narrower than this (narrower, its rows would spill sideways). */
@@ -54,14 +57,17 @@ function icon(el: HTMLElement, names: string[], fallback: string) {
   el.setText(fallback);
 }
 const HELP_HTML = `<h4>Controls</h4><ul>
-      <li><b>Map:</b> wheel zooms · <kbd>Space</kbd>+drag pans · drag empty map to select · right-click to add · click the zoom % to fit · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes.</li>
+      <li><b>Map:</b> wheel zooms · <kbd>Space</kbd>+drag pans · drag empty map to select · right-click to add · drag a piece from the list onto it · <kbd>Delete</kbd> takes the selected pieces off it · click the zoom % to fit.</li>
+      <li><b>Undo:</b> <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes changes made here (map, timeline, cards, deleting) · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> redoes.</li>
       <li><b>Toolbar:</b> location mode · all lines, show pieces, legend · follow scene, follow cursor.</li>
       <li><b>Inside maps:</b> ← goes out one level, ⌂ to the world.</li>
-      <li><b>Timeline:</b> <kbd>←</kbd> <kbd>→</kbd> step scenes · <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> jump moments · <kbd>Shift</kbd>+wheel scrolls sideways · <kbd>Ctrl</kbd>+wheel zooms · click “Scene” or “Moment” to rename them.</li>
+      <li><b>Timeline:</b> <kbd>←</kbd> <kbd>→</kbd> or <kbd>,</kbd> <kbd>.</kbd> step scenes · with <kbd>Shift</kbd>, jump moments · <kbd>Shift</kbd>+wheel scrolls sideways · <kbd>Ctrl</kbd>+wheel zooms · click “Scene” or “Moment” to rename them.</li>
+      <li><b>Dragging on the timeline:</b> a scene onto another: same time · a scene into a gap: its chapter moves there · an event to another scene · a moment, or its edges, to change when it starts and ends.</li>
+      <li><b>Cards:</b> double-click a typed description or a connection to change it.</li>
       <li><b>Caption:</b> double-click it to focus on the POV.</li></ul>`;
 const SECTION_LABEL: Record<string, string> = { scenes: 'Scenes (numbered in reading order)', events: 'Events', storylines: 'Story lines' };
 
-interface Member { piece: M.Piece; exact?: { x: number; y: number } }
+interface Member { piece: M.Piece; exact?: { x: number; y: number }; dead?: boolean }
 interface Group { key: string; x: number; y: number; place?: string; projected?: boolean; members: Member[] }
 type Drag =
   | { kind: 'pan'; x: number; y: number; tx: number; ty: number }
@@ -81,7 +87,9 @@ export class WorldView extends ItemView {
   private zoom = 1; private tx = 0; private ty = 0; private SW = 1000; private SH = 1000; private lastMapW = 0; private mapKey = '';
   private px = 0;
   private placing = false;
-  private putting: string | null = null;   // a piece waiting to be put on the map with the next click
+  private putting: string | null = null;
+  /** Pieces drawn where they died (faded): they can't be moved, only looked at. */
+  private deadHere = new Set<string>();   // a piece waiting to be put on the map with the next click
   private lastSlot: number | null = null; private jump = ''; private lastOrder = 0;
   private space = false; private hover = false; private overView = false; private drag: Drag | null = null;
   private newPin: string | null = null;
@@ -203,7 +211,7 @@ export class WorldView extends ItemView {
   async onClose() { window.setTimeout(() => this.plugin.applyLooksSoon(), 0); }
   private toggleHelp() {
     const h = this.r.help; h.hidden = !h.hidden; if (h.hidden) return;
-    h.innerHTML = this.say(HELP_HTML);
+    h.innerHTML = M.say(Object.fromEntries(Object.entries(this.words).map(([k, v]) => [k, esc(v)])) as unknown as M.Words, HELP_HTML);   // your words for “scene”/“moment”, escaped
     h.createEl('button', { cls: 'se-hb', text: 'Got it' }).onclick = () => { h.hidden = true; };
   }
   /** Rename “scene” or “moment” everywhere: a small box right under the label (one · more than one · reset). */
@@ -248,7 +256,10 @@ export class WorldView extends ItemView {
     const p = this.project;
     // The tab's title names the story: Obsidian only reads it again when asked.
     const title = this.getDisplayText();
-    if (title !== this.shownTitle) { this.shownTitle = title; (this.leaf as unknown as { updateHeader?: () => void }).updateHeader?.(); }
+    // Another story: menus and boxes left open belong to the old one.
+    if (title !== this.shownTitle) { this.shownTitle = title; (this.leaf as unknown as { updateHeader?: () => void }).updateHeader?.(); if (this.r) { this.closeFloat(); this.closeMomentBox(); this.hoverPlace = null; this.renderAreas(); } }
+    // The tab follows on its own; the title in the panel's own header bar has to be told too.
+    const head = this.containerEl.querySelector('.view-header-title'); if (head && head.textContent !== title) head.textContent = title;
     this.renderHead(p);
     this.contentEl.toggleClass('is-empty', !p);
     if (!p) { this.r.upper.style.display = 'none'; this.r.dock.style.display = 'none'; this.r.splitDock.style.display = 'none'; this.r.head.append(this.emptyState()); return; }
@@ -256,6 +267,7 @@ export class WorldView extends ItemView {
     this.tl = await p.timeline();
     if (this.project !== p) return;
     this.applyUi(p);
+    this.renderBroken(p);
     this.povColor.clear();
     for (const s of this.tl.scenes) if (s.pov && p.get(s.pov) && !this.povColor.has(s.pov)) this.povColor.set(s.pov, POV_COLORS[this.povColor.size % POV_COLORS.length]);
     const cur = p.current(this.tl);
@@ -278,6 +290,38 @@ export class WorldView extends ItemView {
     this.renderTimeline(p);
     if (moved) this.keepVisible();
   }
+  /** Links that broke (a note that lost its id, a scene whose settings were deleted): a button in the header that says so. */
+  private renderBroken(p: Project) {
+    this.r.head.querySelector('.se-broken')?.remove();
+    const b = p.broken(); if (!b) return;
+    const n = b.pieces.length + b.scenes.length; if (!n) return;
+    const fixable = b.pieces.filter(x => x.to || x.note).length + b.scenes.filter(x => x.to !== undefined).length;
+    const btn = createEl('button', { cls: 'se-hb se-broken', text: `${n} broken link${n > 1 ? 's' : ''}` });
+    tip(btn, 'Some map spots or scenes lost what they belonged to. Click to see and reconnect them.');
+    this.r.head.querySelector('.se-spacer')?.before(btn);
+    btn.onclick = () => {
+      this.contentEl.querySelector('.se-broken-box')?.remove();
+      const box = this.contentEl.createDiv('se-momentbox se-broken-box');
+      const r = btn.getBoundingClientRect(), c = this.contentEl.getBoundingClientRect();
+      box.style.left = `${Math.max(8, Math.min(r.left - c.left, c.width - 340))}px`; box.style.top = `${r.bottom - c.top + 6}px`;
+      box.createEl('h4', { text: 'Broken links' });
+      const list = box.createEl('ul');
+      const sc = this.words.scene.toLowerCase();
+      for (const x of b.pieces) {
+        const what = x.name ?? 'A piece the story no longer knows';
+        const fix = x.to ? `reconnects to ${p.get(x.to)?.name}` : x.note ? `reconnects to its note` : 'not found';
+        list.createEl('li', { text: `${what}: ${x.uses} spot${x.uses > 1 ? 's' : ''} · ${fix}`, cls: x.to || x.note ? '' : 'is-lost' });
+      }
+      for (const x of b.scenes) {
+        const t = x.to !== undefined ? this.tl?.scenes[x.to] : undefined;
+        list.createEl('li', { text: `${x.label ? x.label.replace(/^\d{1,3}\s+/, '') : `A ${sc}`}: ${x.uses} spot${x.uses > 1 ? 's' : ''} · ${t ? `reconnects to ${sc} ${t.order}` : 'not found'}`, cls: t ? '' : 'is-lost' });
+      }
+      const acts = box.createDiv('se-acts');
+      if (n > fixable) { const clr = acts.createEl('button', { cls: 'se-hb se-ghost se-left', text: 'Clear the rest' }); tip(clr, 'Forget the links nothing matches. Ctrl+Z brings them back.'); clr.onclick = () => { box.remove(); void p.forgetBroken(b); }; }
+      acts.createEl('button', { cls: 'se-hb', text: 'Close' }).onclick = () => box.remove();
+      if (fixable) acts.createEl('button', { cls: 'se-hb mod-cta', text: 'Reconnect' }).onclick = () => { box.remove(); void p.reconnect(b).then(k => new Notice(`Reconnected ${k} link${k === 1 ? '' : 's'}.`)); };
+    };
+  }
   private emptyState() {
     const e = el('div', 'se-empty-state');
     e.append(el('h3', '', 'No story yet'), el('p', '', 'A story is a folder with your chapter notes. Story Engine adds a World folder (one note per piece) and a story-engine.json file next to them.'));
@@ -291,7 +335,7 @@ export class WorldView extends ItemView {
     const pick = h.createEl('select', { cls: 'dropdown se-story-pick' });
     
     for (const pr of this.plugin.projects.values()) { const o = pick.createEl('option', { text: pr.name }); o.value = pr.folder; if (pr === p) o.selected = true; }
-    const add = pick.createEl('option', { text: '+ Set up another story…' }); add.value = '__new';
+    const add = pick.createEl('option', { text: 'New story…' }); add.value = '__new';
     if (!p) { const o = pick.createEl('option', { text: 'No story' }); o.value = ''; o.selected = true; }
     pick.onchange = () => {
       if (pick.value === '__new') { this.plugin.newStory(); void this.render(); return; }
@@ -381,14 +425,23 @@ export class WorldView extends ItemView {
     const typing = !!t && (/INPUT|TEXTAREA|SELECT/.test(t.tagName) || t.isContentEditable);
     if (typing || !(this.contentEl.contains(t) || this.overView)) return;
     if (e.code === 'Space' && this.hover) { if (!e.repeat) { this.space = true; this.r.map.addClass('is-space'); } e.preventDefault(); return; }
-    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); const d = e.key === 'ArrowRight' ? 1 : -1; if (e.shiftKey) this.stepMoment(d); else this.stepScene(d); }
+    // ← → (and , .) step through scenes; with Shift, through moments.
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.code === 'Comma' || e.code === 'Period') {
+      if ((e.ctrlKey || e.metaKey || e.altKey)) return;
+      e.preventDefault(); const d = e.key === 'ArrowRight' || e.code === 'Period' ? 1 : -1; if (e.shiftKey) this.stepMoment(d); else this.stepScene(d); return;
+    }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
       // Undo / redo changes on the map (moves, areas, roofs). Chapters keep their own undo.
       e.preventDefault(); e.stopPropagation();
       const p = this.project; if (!p || this.edit) return;
       const redo = e.key.toLowerCase() === 'y' || e.shiftKey;
-      const ok = redo ? p.redoMap() : p.undoMap();
-      new Notice(ok ? (redo ? 'Redone.' : 'Undone.') : (redo ? 'Nothing to redo.' : 'Nothing to undo on the map.'));
+      void (redo ? p.redoMap() : p.undoMap()).then(what => new Notice(what ? `${redo ? 'Redone' : 'Undone'}: ${what}.` : (redo ? 'Nothing to redo.' : 'Nothing to undo.')));
+      return;
+    }
+    // Delete or Backspace: the selected pieces come off the map (Ctrl+Z puts them back).
+    if ((e.key === 'Delete' || e.key === 'Backspace') && !this.edit && this.sel.size && this.project) {
+      const p = this.project, list = [...this.sel].map(id => p.get(id)).filter((x): x is M.Piece => !!x && p.onMap(x));
+      if (list.length) { e.preventDefault(); p.takeOffMap(...list); new Notice(`${list.length === 1 ? list[0].name : list.length + ' pieces'} taken off the map. Ctrl+Z puts ${list.length === 1 ? 'it' : 'them'} back.`); }
       return;
     }
     if (e.key === 'Escape' && this.edit) { this.finishEdit(false); return; }
@@ -491,6 +544,7 @@ export class WorldView extends ItemView {
   /** Open a map by hand (breadcrumb, double-click a place). It stays until the scene changes. */
   openMap(id: string) {
     const p = this.project; if (!p) return;
+    this.closeFloat();
     // Choosing a map yourself means: stay on it while stepping through scenes.
     if (id !== p.sceneMap(p.current(this.tl)) && this.followMap) { p.data.ui.followMap = false; p.saveQuiet(); }
     this.switchMap(id); void this.render();
@@ -501,24 +555,32 @@ export class WorldView extends ItemView {
     if (key === this.mapKey) return;
     this.mapKey = key;
     this.r.img.toggle(!!src); this.r.blank.toggle(!src);
+    this.r.map.toggleClass('is-blank-sheet', !src);
     this.r.blank.empty();
+    this.r.map.querySelector(':scope > .se-blank-hint')?.remove();
     if (src) { if (this.r.img.getAttribute('src') !== src) this.r.img.src = src; else this.r.img.onload?.(new Event('load')); }
     else {
       this.SW = this.SH = 1000; this.noteAspect(1); this.layoutStage(); this.restoreOrFit();
-      const b = this.r.blank.createDiv('se-blank-hint');
-      b.createDiv({ text: this.mapId === M.MAIN_MAP ? 'No map image yet' : `No image for the ${p.mapName(this.mapId)} map yet` });
-      const btn = b.createEl('button', { cls: 'se-hb', text: 'Choose a map image…' }); btn.onclick = () => this.pickMap(p, this.mapId);
-      b.createDiv({ cls: 'se-small', text: 'Or use this blank sheet.' });
+      // A map with no picture yet: ask for one, in the middle of the map at a readable size (not on the sheet, which zooms).
+      const mapId = this.mapId;
+      if ((p.data.ui.blankOk ?? []).includes(mapId)) return;
+      const b = this.r.map.createDiv('se-blank-hint');
+      b.createEl('h4', { text: mapId === M.MAIN_MAP ? 'No map yet' : `No picture for ${p.mapName(mapId)} yet` });
+      b.createDiv({ cls: 'se-small', text: 'Any picture works: a drawing, a scan, a sketch.' });
+      const acts = b.createDiv('se-acts');
+      acts.createEl('button', { cls: 'mod-cta', text: 'Choose image…' }).onclick = () => this.pickMap(p, mapId);
+      acts.createEl('button', { text: 'Use blank sheet' }).onclick = () => { p.data.ui.blankOk = [...new Set([...(p.data.ui.blankOk ?? []), mapId])]; p.saveQuiet(); b.remove(); };
     }
   }
   private pickMap(p: Project, mapId = M.MAIN_MAP) {
-    new ImagePicker(this.app, f => { if (mapId === M.MAIN_MAP) p.data.map = f.path; else { const m = M.subMap(p.data, mapId); if (m) m.image = f.path; } p.saveSoon(); }).open();
+    new ImagePicker(this.app, f => { p.checkpoint({ what: 'changing the map picture' }); if (mapId === M.MAIN_MAP) p.data.map = f.path; else { const m = M.subMap(p.data, mapId); if (m) m.image = f.path; } p.saveSoon(); }).open();
   }
 
   /* ── where everything is on this map ── */
 
   private layout(p: Project) {
     const d = p.data, tl = this.tl!, cur = p.current(tl), slot = cur?.slot ?? 0, map = this.mapId;
+    this.deadHere.clear();
     const pins: { piece: M.Piece; x: number; y: number }[] = [];
     const groups = new Map<string, Group>();
     const flags: { piece: M.Piece; x: number; y: number; place?: string; inside?: boolean }[] = [];
@@ -527,8 +589,11 @@ export class WorldView extends ItemView {
       const b = p.behaviour(x);
       if (b === 'place') { const pt = d.places[x.id]; if (pt && M.mapOfPlace(d, x.id) === map) pins.push({ piece: x, x: pt.x * this.SW, y: pt.y * this.SH }); continue; }
       if (!tl.scenes.length) continue;
-      const w = p.where(x, slot); if (!w) continue;
-      if (!w.place && !w.pt) { if (b !== 'event') unplaced.push(x); continue; }
+      // The dead stay where they died, faded: a landmark of the death.
+      let w: M.TrackEntry | { pt: M.Point } | null = p.where(x, slot), dead = false;
+      if (!w && b === 'token') { w = M.deathSpot(d, x.id, slot, tl.t.slotOfScene); dead = !!w; }
+      if (!w) continue;
+      if (!('place' in w && w.place) && !w.pt) { if (b !== 'event') unplaced.push(x); continue; }
       const e = M.entryOn(d, w as M.TrackEntry, map); if (!e) continue;   // somewhere not shown on this map
       // Events are headlines (flags), not pieces.
       if (b === 'event') { flags.push({ piece: x, x: e.pt.x * this.SW, y: e.pt.y * this.SH, place: e.place, inside: e.inside }); continue; }
@@ -536,7 +601,8 @@ export class WorldView extends ItemView {
       // A spot of its own (or a loose spot on the map) is exact; otherwise it gets a stable spot inside its place.
       const key = e.place ? `p${e.place}` : `x${x.id}`;
       const g = groups.get(key) ?? groups.set(key, { key, x: center.x * this.SW, y: center.y * this.SH, place: e.place, projected: e.inside, members: [] }).get(key)!;
-      g.members.push({ piece: x, exact: e.exact ? { x: e.pt.x * this.SW, y: e.pt.y * this.SH } : undefined });
+      g.members.push({ piece: x, exact: e.exact ? { x: e.pt.x * this.SW, y: e.pt.y * this.SH } : undefined, dead });
+      if (dead) this.deadHere.add(x.id); else this.deadHere.delete(x.id);
     }
     // Roofs over buildings on this map. Open when the POV (or the scene's place) is inside, when chosen, or opened by a click.
     const pov = cur?.pov ? p.get(cur.pov) : undefined, povW = pov ? p.where(pov, slot) : null;
@@ -610,7 +676,7 @@ export class WorldView extends ItemView {
         const x = m.piece, isPov = x.id === povId, { x: sx, y: sy } = spots.get(x.id)!, folded = fold && !keep(m);
         // Hidden if its own spot (or, without one, its place) is under a closed roof.
         const hidden = m.exact ? covered(sx, sy, undefined, x.name) : covered(g.x, g.y, g.place, x.name);
-        const el = st.createDiv(`se-tok ${this.sel.has(x.id) || this.card === x.id ? 'is-sel' : ''} ${isPov ? 'is-pov' : ''} ${this.newPin === x.id ? 'is-new' : ''} ${hidden ? 'is-under-roof' : ''} ${m.exact ? 'is-exact' : ''} ${folded ? 'is-folded' : ''}`);
+        const el = st.createDiv(`se-tok ${this.sel.has(x.id) || this.card === x.id ? 'is-sel' : ''} ${isPov ? 'is-pov' : ''} ${this.newPin === x.id ? 'is-new' : ''} ${hidden ? 'is-under-roof' : ''} ${m.exact ? 'is-exact' : ''} ${folded ? 'is-folded' : ''} ${m.dead ? 'is-dead' : ''}`);
         el.dataset.id = x.id; el.dataset.group = g.key;
         if (g.place && !g.projected) el.dataset.place = g.place;
         el.style.setProperty('--c', isPov ? (this.povColor.get(x.id) ?? p.type(x.type).color) : p.type(x.type).color);
@@ -619,6 +685,7 @@ export class WorldView extends ItemView {
         const rings = x.themes.map(t => d.themes[t]?.color).filter(Boolean).slice(0, 3).map((c, k) => `0 0 0 ${3 + k * 3}px ${c}`);
         if (rings.length) f.style.setProperty('--rings', rings.join(', '));
         el.createDiv({ cls: 'se-n', text: x.name });
+        if (m.dead) { f.createDiv({ cls: 'se-dead-mark', text: '✝' }); tip(el, `${x.name} died here`); continue; }   // no connection lines from the dead
         // Folded pieces connect their lines to the place's marker.
         if (!hidden) at.set(x.id, folded ? { x: g.x, y: g.y } : { x: sx, y: sy });
       }
@@ -860,9 +927,23 @@ export class WorldView extends ItemView {
       this.zoomAt(this.zoom * Math.exp(-e.deltaY * 0.0016), e.clientX - r.left, e.clientY - r.top);
       if (!raf) raf = requestAnimationFrame(() => { raf = 0; this.renderOverlay(); this.renderAreas(); });
     }, { passive: false });
+    // A piece dragged in from the Pieces list lands where it's dropped, as if put there with a click.
+    const isPiece = (e: DragEvent) => !!e.dataTransfer?.types.includes(PIECE_DRAG);
+    map.addEventListener('dragover', e => { if (!isPiece(e)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; map.addClass('is-dropping'); });
+    map.addEventListener('dragleave', e => { if (!map.contains(e.relatedTarget as Node | null)) map.removeClass('is-dropping'); });
+    map.addEventListener('drop', async e => {
+      if (!isPiece(e)) return;
+      e.preventDefault(); map.removeClass('is-dropping');
+      const p = this.project, x = p?.get(e.dataTransfer!.getData(PIECE_DRAG)); if (!p || !x) return;
+      const pt = this.toStage(e.clientX, e.clientY);
+      if (!this.onImage(pt)) { new Notice('That spot is off the map.'); return; }
+      this.putting = null;
+      await this.putToken(p, x, pt);
+      void this.render();
+    });
     map.addEventListener('pointerdown', e => {
       const t = e.target as HTMLElement;
-      if (t.closest('.se-hud, .se-ctx, .se-namebox, .se-flashbanner, .se-offmap, .se-legend, .se-maptag, .se-follow-map, .se-zoom-pct, .se-nav-b')) return;
+      if (t.closest('.se-hud, .se-ctx, .se-namebox, .se-flashbanner, .se-offmap, .se-legend, .se-maptag, .se-follow-map, .se-zoom-pct, .se-nav-b, .se-blank-hint')) return;
       this.closeFloat();
       map.focus({ preventScroll: true });
       if (e.button === 2) return;
@@ -926,7 +1007,9 @@ export class WorldView extends ItemView {
     });
     map.addEventListener('pointerup', e => void this.mapUp(e));
     map.addEventListener('contextmenu', e => {
-      e.preventDefault(); this.closeFloat();
+      e.preventDefault();
+      if ((e.target as HTMLElement).closest('.se-blank-hint')) return;
+      this.closeFloat();
       const p = this.project; if (!p) return;
       if (this.edit) {
         // Right-click a point to remove it (a shape keeps at least three).
@@ -938,35 +1021,52 @@ export class WorldView extends ItemView {
       if (!this.onImage(pt)) return;
       const r = map.getBoundingClientRect(), m = map.createDiv('se-ctx');
       m.style.left = `${Math.min(e.clientX - r.left, r.width - 250)}px`; m.style.top = `${Math.min(e.clientY - r.top, r.height - 240)}px`;
-      const item = (text: string, fn: () => void) => { const b = m.createEl('button', { text }); b.onclick = () => { m.remove(); fn(); }; };
+      const item = (text: string, fn: () => void, hint?: string) => { const b = m.createEl('button', { text }); if (hint) tip(b, hint); b.onclick = () => { m.remove(); fn(); }; };
       const hit = (e.target as HTMLElement).closest('.se-pin, .se-roof, .se-group') as HTMLElement | null;
       const pid = hit?.dataset.id ?? hit?.dataset.roof ?? hit?.dataset.place ?? M.placeAt(p.data, this.mapId, { x: pt.x / this.SW, y: pt.y / this.SH }, p.isPlaceId);
+      const tok = (e.target as HTMLElement).closest('.se-tok') as HTMLElement | null, hid = tok?.dataset.id ?? hit?.dataset.id;
+      const hitPiece = hid ? p.get(hid) : undefined;
+      if (hitPiece && p.behaviour(hitPiece) !== 'place') {
+        // A character, item or event on the map.
+        const cur = p.current(this.tl), sc = this.words.scene.toLowerCase();
+        m.createDiv({ cls: 'se-ctx-h', text: hitPiece.name });
+        item('Show card', () => { this.card = hitPiece.id; this.sel = new Set([hitPiece.id]); void this.render(); });
+        item('Rename…', () => this.rename(p, hitPiece));
+        m.createEl('hr');
+        if (cur && p.behaviour(hitPiece) === 'token' && p.where(hitPiece)) item('Gone from here', () => { p.checkpoint({ what: `marking ${hitPiece.name} gone` }); void p.markGone(hitPiece, cur); }, `Off the map from ${sc} ${cur.order} on`);
+        item('Remove from map', () => p.takeOffMap(hitPiece), 'Takes away every stop on its journey');
+        return;
+      }
       const pl = pid ? p.get(pid) : undefined;
       if (pl) {
-        // A place: its area, its inside map and its roof.
+        // A place: its name and icon, its shape (area, roof, inside map), then taking it off the map.
         m.createDiv({ cls: 'se-ctx-h', text: pl.name });
-        item(p.data.icons[pl.id] ? 'Change its icon…' : 'Choose an icon…', () => this.pickIcon(p, pl.id));
-        item('Edit its area', () => this.startEdit('area', pl.id, 'edit'));
-        item('Draw a new area…', () => this.startEdit('area', pl.id, 'draw'));
-        if (p.data.areas[pl.id]) item('Reset its area to a circle', () => { p.checkpoint(); p.setArea(pl.id, null); });
+        item('Rename…', () => this.rename(p, pl));
+        item(p.data.icons[pl.id] ? 'Change icon…' : 'Choose icon…', () => this.pickIcon(p, pl.id));
+        m.createEl('hr');
+        item('Edit area', () => this.startEdit('area', pl.id, 'edit'), 'Drag its points to reshape it');
+        item('Redraw area', () => this.startEdit('area', pl.id, 'draw'), 'Click around its border to draw a new outline');
+        if (p.data.areas[pl.id]) item('Reset area', () => { p.checkpoint(); p.setArea(pl.id, null); }, 'Back to a plain circle');
         const inside = p.insideMapOf(pl.id);
-        if (inside) item(`⤵ Go inside (${inside.name})`, () => this.openMap(inside.id));
-        else item(`＋ Make an inside map for ${pl.name}…`, () => this.makeInsideMap(pl));
+        if (inside) item('Open inside map', () => this.openMap(inside.id));
+        else item('Add inside map…', () => this.makeInsideMap(pl), 'A map of its inside, opened by double-clicking it');
         const roof = p.data.roofs[pl.id];
         if (roof) {
-          item('Edit the roof\'s shape', () => this.startEdit('roof', pl.id, 'edit'));
-          item('Roof picture…', () => new ImagePicker(this.app, f => { const rf = p.data.roofs[pl.id]; if (rf) p.setRoof(pl.id, { ...rf, image: f.path }); }).open());
-          item('Remove the roof', () => { p.checkpoint(); p.setRoof(pl.id, null); });
-        } else item(`Draw a roof over ${pl.name}…`, () => this.startEdit('roof', pl.id, 'draw'));
+          item('Edit roof', () => this.startEdit('roof', pl.id, 'edit'));
+          item('Roof image…', () => new ImagePicker(this.app, f => { const rf = p.data.roofs[pl.id]; if (rf) { p.checkpoint(); p.setRoof(pl.id, { ...rf, image: f.path }); } }).open());
+          item('Remove roof', () => { p.checkpoint(); p.setRoof(pl.id, null); });
+        } else item('Draw roof', () => this.startEdit('roof', pl.id, 'draw'), 'Covers it on the map until you click it open');
+        m.createEl('hr');
+        item('Remove from map', () => p.takeOffMap(pl), 'Takes its pin, area and roof off the map');
         m.createEl('hr');
       }
       const placeType = p.data.types.find(t => t.behaviour === 'place');
       const charType = p.data.types.find(t => t.id === 'character') ?? p.data.types.find(t => t.behaviour === 'token');
-      if (placeType) item(`＋ New ${placeType.label.toLowerCase()} here`, () => this.askName(e.clientX, e.clientY, placeType.id));
-      if (charType) item(`＋ New ${charType.label.toLowerCase()} here`, () => this.askName(e.clientX, e.clientY, charType.id));
-      item('＋ Something else here…', () => this.askName(e.clientX, e.clientY, null));
+      if (placeType) item(`New ${placeType.label.toLowerCase()}`, () => this.askName(e.clientX, e.clientY, placeType.id), 'Added where you right-clicked');
+      if (charType) item(`New ${charType.label.toLowerCase()}`, () => this.askName(e.clientX, e.clientY, charType.id), 'Added where you right-clicked');
+      item('New piece…', () => this.askName(e.clientX, e.clientY, null), 'Any type, added where you right-clicked');
       m.createEl('hr');
-      item(this.placing ? 'Leave location mode' : 'Location mode: add a location with every click', () => this.setPlacing(!this.placing));
+      item(this.placing ? 'Exit location mode' : 'Location mode', () => this.setPlacing(!this.placing), 'Every click on the map adds a location');
     });
   }
 
@@ -1006,7 +1106,7 @@ export class WorldView extends ItemView {
     const p = this.project, ed = this.edit; this.edit = null; this.editCursor = null; this.snapped = null;
     if (!p || !ed) return;
     if (save && ed.pts.length >= 3) {
-      p.checkpoint();
+      p.checkpoint({ what: ed.kind === 'roof' ? 'the roof change' : 'the area change' });
       const pts = ed.pts.map(q => ({ x: Math.min(1, Math.max(0, q.x)), y: Math.min(1, Math.max(0, q.y)) }));
       if (ed.kind === 'area') p.setArea(ed.pid, pts);
       else {
@@ -1046,12 +1146,14 @@ export class WorldView extends ItemView {
   /** Choose a place's icon: the built-in set, an image from the vault, or none (a plain dot). */
   pickIcon(p: Project, pid: string) {
     new IconPicker(this.app, p.get(pid)?.name ?? 'this location', p.data.icons[pid] ?? null, ref => {
+      p.checkpoint({ what: `changing ${p.get(pid)?.name ?? 'its'}'s icon` });
       if (ref) p.data.icons[pid] = ref; else delete p.data.icons[pid];
       p.saveSoon();
     }).open();
   }
   private makeInsideMap(pl: M.Piece) {
     const p = this.project; if (!p) return;
+    p.checkpoint({ what: `adding an inside map for ${pl.name}` });
     const m = p.addMap(pl.name, pl.id);
     new Notice(`Made an inside map for ${pl.name}. Pick its picture, or close the picker to use a blank sheet.`);
     new ImagePicker(this.app, f => { m.image = f.path; p.saveSoon(); }).open();
@@ -1107,12 +1209,14 @@ export class WorldView extends ItemView {
       // A plain click selects just that one piece.
       if (!d.moved) { if (this.doubleTap(d.id)) return; this.sel = new Set([d.id]); this.card = d.id; void this.render(); return; }
       void shifted;
-      p.checkpoint();
+      p.checkpoint({ what: this.sel.size > 1 ? `moving ${this.sel.size} pieces` : `moving ${p.get(d.id)?.name ?? 'it'}` });
       const dx = (e.clientX - d.x) / this.zoom, dy = (e.clientY - d.y) / this.zoom;
       const cur = p.current(this.tl);
       let blocked = false, landed: string | null = null;
+      let deadOnes = 0;
       for (const id of this.sel) {
         const x = p.get(id); if (!x) continue;
+        if (this.deadHere.has(id)) { deadOnes++; continue; }   // moving the dead would bring them back to life
         const b = p.behaviour(x), base = this.positions.get(id) ?? this.toStage(e.clientX, e.clientY);
         if (b === 'place') { p.setPlacePoint(x, this.frac({ x: base.x + dx, y: base.y + dy })); continue; }
         if (!cur) { blocked = true; continue; }
@@ -1122,6 +1226,7 @@ export class WorldView extends ItemView {
         await p.place(x, cur, { ...target, ...(b === 'event' ? { only: true } : {}) });
       }
       if (blocked) new Notice(this.say('Add a chapter first: pieces move scene by scene.'));
+      if (deadOnes) new Notice(deadOnes === 1 ? 'The dead stay where they died. Use “Undo death” on the card to move them again.' : 'The dead stay where they died.');
       if (landed && this.sel.size === 1) new Notice(this.say(`${p.get(d.id)?.name} is at ${p.get(landed)?.name} from scene ${cur?.order} on.`));
       this.card = d.id; this.hoverPlace = null;
       p.saveSoon();
@@ -1139,13 +1244,22 @@ export class WorldView extends ItemView {
     this.refreshSelection();
     void this.renderCard(p);
   }
-  private async putToken(p: Project, x: M.Piece, pt: { x: number; y: number }) {
+  private async putToken(p: Project, x: M.Piece, pt: { x: number; y: number }, newPiece = false) {
     const cur = p.current(this.tl);
-    p.checkpoint();
+    // Placing the dead would quietly bring them back: that takes “Undo death” on their card.
+    if (cur && this.tl && p.behaviour(x) === 'token' && M.deathAt(p.data, x.id, cur.slot, this.tl.t.slotOfScene)) { new Notice(`${x.name} is dead by this ${this.words.scene.toLowerCase()}. Use “Undo death” on the card first.`); return; }
+    if (!newPiece) p.checkpoint({ what: `placing ${x.name}` });
     if (p.behaviour(x) === 'place') { p.setPlacePoint(x, this.frac(pt), this.mapId); return; }
     if (!cur) { new Notice(this.say('Add a chapter first: pieces move scene by scene.')); return; }
     await p.place(x, cur, { ...p.spot(this.mapId, this.frac(pt)), ...(p.behaviour(x) === 'event' ? { only: true } : {}) });
     this.card = x.id; this.sel = new Set([x.id]); this.newPin = x.id;
+  }
+  /** Ask for a new name and rename the piece (its note too; links to it follow). */
+  private rename(p: Project, x: M.Piece) {
+    new NameModal(this.app, `Rename ${x.name}`, x.name, async v => {
+      try { await p.renamePiece(x, v); } catch (err) { new Notice((err as Error).message); return false; }
+      return true;
+    }).open();
   }
   /** Name box for something new at a spot on the map. */
   private askName(cx: number, cy: number, typeId: string | null) {
@@ -1167,7 +1281,7 @@ export class WorldView extends ItemView {
       try {
         const x = await p.createPiece({ name: inp.value.trim(), type: t.id });
         if (t.behaviour === 'place') { p.setPlacePoint(x, this.frac(pt), this.mapId); this.newPin = x.id; this.card = x.id; }
-        else await this.putToken(p, x, pt);
+        else await this.putToken(p, x, pt, true);
         p.saveSoon();
       } catch (err) { new Notice((err as Error).message); }
     };
@@ -1216,7 +1330,22 @@ export class WorldView extends ItemView {
         if (!w) r.addClass('is-dead');
       }
       r.createSpan({ cls: 'se-m', text: meta });
+      // Drag a piece onto the map to put it there.
+      r.draggable = true;
+      r.addEventListener('dragstart', e => { e.dataTransfer?.setData(PIECE_DRAG, x.id); if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'; });
       r.onclick = () => { this.card = x.id; this.sel = new Set([x.id]); void this.render(); };
+      r.oncontextmenu = e => {
+        e.preventDefault();
+        const menu = new Menu();
+        menu.addItem(i => i.setTitle('Show card').onClick(() => r.click()));
+        if ((!p.onMap(x) || (b !== 'place' && cur && !at.get(x.id))) && !died.has(x.id)) menu.addItem(i => i.setTitle(b === 'place' || !cur ? 'Place on map' : 'Place in this scene').onClick(() => { this.putting = x.id; this.renderMap(p); }));
+        if (p.onMap(x)) menu.addItem(i => i.setTitle('Remove from map').onClick(() => p.takeOffMap(x)));
+        menu.addSeparator();
+        menu.addItem(i => i.setTitle('Rename…').onClick(() => this.rename(p, x)));
+        menu.addItem(i => i.setTitle('Open note').onClick(() => void this.app.workspace.openLinkText(x.path, '', 'tab')));
+        menu.addItem(i => i.setTitle('Delete').onClick(() => void p.deletePiece(x, true).then(() => { new Notice(`Deleted ${x.name}. Ctrl+Z brings it back.`); if (this.card === x.id) this.card = null; this.sel.delete(x.id); void this.render(); })));
+        menu.showAtMouseEvent(e);
+      };
     };
     // Faction members: a “Member of” connection to another piece.
     const factionsOf = (x: M.Piece) => x.connections.filter(cn => M.isMembership(cn.label)).map(cn => p.find(cn.target)).filter((f): f is M.Piece => !!f && f.id !== x.id);
@@ -1284,6 +1413,19 @@ export class WorldView extends ItemView {
       const q = c.createDiv(`se-quote ${d.source ? '' : 'is-typed'}`);
       q.createSpan({ text: d.text });
       if (d.source) { q.title = `From ${d.source}`; q.onclick = ev => { if (!(ev.target as HTMLElement).closest('.se-x')) void this.jumpToQuote(p, d.source!, d.text); }; }
+      else {
+        // A typed description: double-click to rewrite it right here (Enter saves, Esc leaves it as it was).
+        tip(q, 'Double-click to edit');
+        q.ondblclick = ev => {
+          if ((ev.target as HTMLElement).closest('.se-x')) return;
+          const ta = createEl('textarea', { cls: 'se-desc-edit' }); ta.value = d.text; ta.rows = Math.min(8, Math.max(2, Math.ceil(d.text.length / 40)));
+          q.replaceWith(ta); ta.focus();
+          let done = false;
+          const save = (keep: boolean) => { if (done) return; done = true; if (keep && ta.value.trim() && ta.value.trim() !== d.text) void p.editDescription(x, d.raw, ta.value); else void this.renderCard(p); };
+          ta.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save(true); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); save(false); } };
+          ta.onblur = () => save(true);
+        };
+      }
       const del = q.createEl('button', { cls: 'se-x', text: '×' }); 
       del.onclick = ev => { ev.stopPropagation(); void p.removeDescription(x, d.raw); };
     }
@@ -1298,6 +1440,8 @@ export class WorldView extends ItemView {
       const nm = row.createEl('b', { text: tgt?.name ?? cn.target });
       if (tgt) { nm.addClass('se-link'); nm.onclick = () => { this.card = tgt.id; this.sel = new Set([tgt.id]); void this.render(); }; }
       const del = row.createEl('button', { cls: 'se-x', text: '×' }); del.onclick = () => void p.removeConnection(x, cn);
+      tip(row, 'Double-click to rename the connection');
+      row.ondblclick = ev => { if ((ev.target as HTMLElement).closest('.se-x, .se-link')) return; new NameModal(this.app, `Connection to ${tgt?.name ?? cn.target}`, cn.label, async v => { await p.relabelConnection(x, cn, v); return true; }, 'Save').open(); };
     }
     for (const { o, cn } of incoming) {
       // Read the other way round: “Gared — sibling of Bran”.
@@ -1313,7 +1457,7 @@ export class WorldView extends ItemView {
       section('On the map', undefined, 'Map');
       const here = p.all().filter(o => p.where(o)?.place === x.id);
       c.createDiv({ cls: 'se-sub', text: p.data.places[x.id] ? `${here.length ? 'Here now: ' + here.map(o => o.name).join(', ') + '. ' : ''}Drag its pin to move it.` : 'Not on the map yet.' });
-      if (!p.data.places[x.id]) { const put = c.createEl('button', { cls: 'se-hb', text: 'Put it on the map' }); put.onclick = () => { this.putting = x.id; this.renderMap(p); }; }
+      if (!p.data.places[x.id]) { const put = c.createEl('button', { cls: 'se-hb', text: 'Place on map' }); put.onclick = () => { this.putting = x.id; this.renderMap(p); }; }
       const scenesHere = tl.scenes.filter(s => s.where === x.id);
       if (scenesHere.length) c.createDiv({ cls: 'se-sub', text: this.say(`Scenes set here: ${scenesHere.map(s => s.order).join(', ')}`) });
       if (p.data.places[x.id]) {
@@ -1321,22 +1465,22 @@ export class WorldView extends ItemView {
         if (onMap !== M.MAIN_MAP) c.createDiv({ cls: 'se-sub', text: `On the ${p.mapName(onMap)} map.` });
         const acts = c.createDiv('se-acts se-start');
         const inside = p.insideMapOf(x.id);
-        if (inside) { const go = acts.createEl('button', { cls: 'se-hb', text: `⤵ Go inside (${inside.name})` }); go.onclick = () => this.openMap(inside.id); }
-        else { const mk = acts.createEl('button', { cls: 'se-hb', text: '+ Inside map…' }); mk.onclick = () => this.makeInsideMap(x); }
+        if (inside) { const go = acts.createEl('button', { cls: 'se-hb', text: 'Open inside map' }); go.onclick = () => this.openMap(inside.id); }
+        else { const mk = acts.createEl('button', { cls: 'se-hb', text: 'Add inside map…' }); mk.onclick = () => this.makeInsideMap(x); }
         const ic = acts.createEl('button', { cls: 'se-hb', text: p.data.icons[x.id] ? 'Change icon…' : 'Icon…' });
         
         ic.onclick = () => this.pickIcon(p, x.id);
         const area = acts.createEl('button', { cls: 'se-hb', text: 'Edit area' });
         
         area.onclick = () => this.startEdit('area', x.id, 'edit');
-        const draw = acts.createEl('button', { cls: 'se-hb', text: 'Draw area' }); draw.onclick = () => this.startEdit('area', x.id, 'draw');
+        const draw = acts.createEl('button', { cls: 'se-hb', text: 'Redraw area' }); draw.onclick = () => this.startEdit('area', x.id, 'draw');
         const roof = p.data.roofs[x.id];
         const rb = acts.createEl('button', { cls: 'se-hb', text: roof ? 'Edit roof' : '+ Roof' });
         
         rb.onclick = () => this.startEdit('roof', x.id, roof ? 'edit' : 'draw');
         if (roof) {
-          const pic = acts.createEl('button', { cls: 'se-hb', text: 'Roof picture…' }); pic.onclick = () => new ImagePicker(this.app, f => p.setRoof(x.id, { ...roof, image: f.path })).open();
-          const rm = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'Remove roof' }); confirmClick(rm, 'Sure?', () => { p.checkpoint(); p.setRoof(x.id, null); });
+          const pic = acts.createEl('button', { cls: 'se-hb', text: 'Roof image…' }); pic.onclick = () => new ImagePicker(this.app, f => { p.checkpoint(); p.setRoof(x.id, { ...roof, image: f.path }); }).open();
+          const rm = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'Remove roof' }); confirmClick(rm, 'Confirm', () => { p.checkpoint(); p.setRoof(x.id, null); });
         }
       }
     } else if (tl.scenes.length) {
@@ -1360,6 +1504,12 @@ export class WorldView extends ItemView {
         btn.createSpan({ cls: 'se-w', text: `${M.bandAt(tl.t, st.slot)?.moment.label ?? ''}${sc ? ` · ${this.words.scene.toLowerCase()} ${sc.order}` : ''}`.replace(/^ · /, '') });
         btn.createSpan({ text: st.text });
         btn.onclick = () => { if (sc) p.setView(sc.order); };
+        // × takes that stop off the journey (a wrong “Gone”, a move that shouldn't be there).
+        const own = (p.data.track[x.id] ?? []).filter(e => tl.t.slotOfScene.get(e.s) === st.slot);
+        if (own.length) {
+          const rm = btn.createSpan({ cls: 'se-jl-x', text: '×' });
+          rm.onclick = ev => { ev.stopPropagation(); p.checkpoint({ what: `removing a stop from ${x.name}'s journey` }); p.data.track[x.id] = (p.data.track[x.id] ?? []).filter(e => !own.includes(e)); if (!p.data.track[x.id].length) delete p.data.track[x.id]; p.invalidateScenes(); p.saveSoon(); };
+        }
       });
       if (cur && b === 'token') {
         const acts = c.createDiv('se-acts se-start');
@@ -1368,14 +1518,14 @@ export class WorldView extends ItemView {
         if (deathId) {
           const ds = tl.scenes.find(s2 => s2.id === deathId);
           c.createDiv({ cls: 'se-sub', text: `Dead from ${sc} ${ds?.order ?? '?'} on${ds ? ` (${ds.label})` : ''}.` });
-          const un = acts.createEl('button', { cls: 'se-hb', text: 'Not dead after all' }); 
-          un.onclick = () => { p.data.track[x.id] = (p.data.track[x.id] ?? []).filter(e => e.s !== deathId); p.saveSoon(); };
+          const un = acts.createEl('button', { cls: 'se-hb', text: 'Undo death' }); 
+          un.onclick = () => { p.checkpoint({ what: `undoing ${x.name}'s death` }); p.undoDeath(x, deathId); };
         } else if (w) {
-          const dh = acts.createEl('button', { cls: 'se-hb', text: `Dead from ${sc} ${cur.order} on` }); 
-          dh.onclick = () => void p.place(x, cur, { gone: true, dead: true });
-          const g = acts.createEl('button', { cls: 'se-hb', text: `Gone from ${sc} ${cur.order} on` }); g.onclick = () => void p.place(x, cur, { gone: true });
+          const dh = acts.createEl('button', { cls: 'se-hb', text: 'Dies here' }); tip(dh, `Dead from ${sc} ${cur.order} on`); 
+          dh.onclick = () => { p.checkpoint({ what: `${x.name}'s death` }); void p.markGone(x, cur, true); };
+          const g = acts.createEl('button', { cls: 'se-hb', text: 'Gone from here' }); tip(g, `Off the map from ${sc} ${cur.order} on`); g.onclick = () => { p.checkpoint({ what: `marking ${x.name} gone` }); void p.markGone(x, cur); };
         }
-        if (!w) { const h = acts.createEl('button', { cls: 'se-hb', text: `Put it in ${sc} ${cur.order}` }); h.onclick = () => { this.putting = x.id; this.renderMap(p); }; }
+        if (!w && !deathId) { const h = acts.createEl('button', { cls: 'se-hb', text: 'Place in this scene' }); tip(h, `Then click the map where it is in ${sc} ${cur.order}`); h.onclick = () => { this.putting = x.id; this.renderMap(p); }; }
       }
     }
     section('Themes & rules');
@@ -1391,8 +1541,15 @@ export class WorldView extends ItemView {
 
     const acts = root.createDiv('se-acts se-start se-card-acts');
     const open = acts.createEl('button', { cls: 'se-hb', text: 'Open note' }); open.onclick = () => void this.app.workspace.openLinkText(x.path, '', 'tab');
-    const del = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'Delete…' }); 
-    confirmClick(del, 'Sure? Click again', () => void p.deletePiece(x).then(() => { this.card = null; this.sel.delete(x.id); void this.render(); }));
+    acts.createEl('button', { cls: 'se-hb', text: 'Rename…' }).onclick = () => this.rename(p, x);
+    if (p.onMap(x)) {
+      const off = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'Remove from map' });
+      tip(off, b === 'place' ? 'Takes its pin, area and roof off the map' : 'Takes away every stop on its journey');
+      confirmClick(off, 'Confirm', () => p.takeOffMap(x));
+    }
+    const del = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'Delete' }); 
+    tip(del, 'Moves its note to the trash. Ctrl+Z brings it back.');
+    confirmClick(del, 'Confirm', () => void p.deletePiece(x, true).then(() => { this.card = null; this.sel.delete(x.id); void this.render(); }));
     root.scrollTop = scroll;
   }
   private async jumpToQuote(p: Project, source: string, text: string) {
@@ -1448,7 +1605,7 @@ export class WorldView extends ItemView {
     const delBtn = (row: HTMLElement, used: number, what: string, fn: () => void) => {
       const d = row.createEl('button', { cls: 'se-x', text: '×' });
       const go = () => { fn(); this.renderSetup(p); p.saveSoon(); };
-      if (used) confirmClick(d, 'Sure?', go); else d.onclick = go;
+      if (used) confirmClick(d, 'Confirm', go); else d.onclick = go;
     };
     const BEH = M.BEHAVIOURS;
 
@@ -1462,7 +1619,7 @@ export class WorldView extends ItemView {
       beh.onchange = () => { t.behaviour = beh.value as M.Behaviour; p.saveSoon(); };
       const used = p.usage('type', t.id);
       row.createSpan({ cls: 'se-count', text: used ? String(used) : '' });
-      delBtn(row, used, 'type', () => { p.data.types = p.data.types.filter(x => x !== t); });
+      delBtn(row, used, 'type', () => { p.checkpoint({ what: `deleting the ${t.label} type`, keys: ['types'] }); p.data.types = p.data.types.filter(x => x !== t); });
     }
     bulk('Add: Spirit, Ship…', (l, beh) => p.addTypes(l, beh as M.Behaviour), BEH);
 
@@ -1477,7 +1634,7 @@ export class WorldView extends ItemView {
       const arrow = row.createEl('select', { cls: 'dropdown se-arrow' }); for (const [v, l] of [['none', '—'], ['end', '→'], ['both', '↔']]) arrow.createEl('option', { text: l, value: v }); arrow.value = s.arrow; arrow.onchange = () => { s.arrow = arrow.value as M.LineStyle['arrow']; p.saveSoon(); };
       const used = p.usage('style', s.label);
       row.createSpan({ cls: 'se-count', text: used ? String(used) : '' });
-      delBtn(row, used, 'connection type', () => { p.data.styles = p.data.styles.filter(x => x !== s); });
+      delBtn(row, used, 'connection type', () => { p.checkpoint({ what: `deleting the ${s.label} connection type`, keys: ['styles'] }); p.data.styles = p.data.styles.filter(x => x !== s); });
     }
     bulk('Add: Rival, Mentor…', l => p.addStyles(l));
 
@@ -1521,12 +1678,12 @@ export class WorldView extends ItemView {
       if (image && clear) { const cl = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'Clear' }); cl.onclick = clear; }
       extra?.(acts);
     };
-    mapRow('World', '', p.data.map, () => this.pickMap(p), () => { p.data.map = null; p.saveSoon(); this.renderSetup(p); });
+    mapRow('World', '', p.data.map, () => this.pickMap(p), () => { p.checkpoint({ what: 'clearing the map picture' }); p.data.map = null; p.saveSoon(); this.renderSetup(p); });
     for (const m of p.data.maps) {
-      mapRow(m.name, `inside ${p.get(m.anchor)?.name ?? '?'}`, m.image, () => this.pickMap(p, m.id), () => { m.image = null; p.saveSoon(); this.renderSetup(p); }, acts => {
+      mapRow(m.name, `inside ${p.get(m.anchor)?.name ?? '?'}`, m.image, () => this.pickMap(p, m.id), () => { p.checkpoint({ what: `clearing the ${m.name} picture` }); m.image = null; p.saveSoon(); this.renderSetup(p); }, acts => {
         acts.createEl('button', { cls: 'se-hb', text: 'Open' }).onclick = () => this.openMap(m.id);
         const d2 = acts.createEl('button', { cls: 'se-x', text: '×' }); 
-        confirmClick(d2, 'Sure?', () => { if (this.mapId === m.id) this.openMap(M.MAIN_MAP); p.removeMap(m.id); this.renderSetup(p); });
+        confirmClick(d2, 'Confirm', () => { if (this.mapId === m.id) this.openMap(M.MAIN_MAP); p.checkpoint(); p.removeMap(m.id); this.renderSetup(p); });
       });
     }
     if (!p.data.maps.length) c.createDiv({ cls: 'se-sub', text: 'Inside maps: right-click a location.' });
@@ -1544,6 +1701,12 @@ export class WorldView extends ItemView {
       const s = r.createEl('select', { cls: 'dropdown' }); for (const o of others) s.createEl('option', { text: o.name, value: o.folder });
       r.createEl('button', { cls: 'se-hb', text: 'Copy' }).onclick = () => { const o = this.plugin.projects.get(s.value); if (o) { p.copyDefinitionsFrom(o); new Notice(`Copied definitions from “${o.name}”.`); this.renderSetup(p); } };
     }
+    head('This story', `Its folder: ${p.folder}`);
+    const rm = c.createDiv('se-acts se-start').createEl('button', { cls: 'se-hb se-ghost', text: 'Remove story…' });
+    tip(rm, 'Stop using this folder as a story. Your chapters stay.');
+    rm.onclick = () => new RemoveStoryModal(this.app, p, async world => {
+      await this.plugin.removeStory(p, world);
+    }).open();
     root.scrollTop = scroll;
   }
 
@@ -1555,7 +1718,10 @@ export class WorldView extends ItemView {
   private renderTimeline(p: Project) {
     const tl = this.tl!, t = tl.t, el2 = this.r.tlEl;
     if (!tl.scenes.length) {
-      el2.style.width = ''; el2.innerHTML = `<div class="se-empty se-pad">No chapters yet. Chapters are notes with the book look inside this story's folder. Use “Story Engine: New chapter”, or turn the book look on for a note.</div>`;
+      el2.style.width = ''; el2.empty();
+      const e = el2.createDiv('se-empty se-pad se-nochapters');
+      e.createSpan({ text: 'No chapters yet. ' });
+      e.createEl('button', { cls: 'mod-cta', text: 'New chapter' }).onclick = () => this.plugin.newChapter();
       this.drawOverview(); return;
     }
     if (!this.px) { const w = this.r.wrap.clientWidth || 800; this.px = Math.max(6, Math.min(30, (w - LEFT - 50) / t.slots)); }
@@ -1567,6 +1733,8 @@ export class WorldView extends ItemView {
       if (b.moment.skip && b.start > 0) h += `<div class="se-skip" data-gap="${mid}" style="left:${a - g}px;width:${g}px"></div><div class="se-skiplabel" data-gap="${mid}" style="left:${a - g / 2}px">⤳ ${esc(M.skipLabel(b.moment))}</div>`;
       h += `<div class="se-band" data-moment="${esc(b.moment.id)}" style="left:${a}px;width:${w}px">${w > 30 ? esc(b.moment.label) : ''}</div>`;
       h += `<div class="se-edge" data-moment="${esc(b.moment.id)}" style="left:${a - 4}px"></div>`;
+      // Where no other moment takes over, its right edge can be dragged to end it sooner (or later).
+      if (!t.bands.some(o => o.start === b.end)) h += `<div class="se-edge se-edge-end" data-moment-end="${mid}" style="left:${a + w - 4}px"></div>`;
     }
     if (px >= 6) for (let s = 0; s < t.slots; s++) h += `<div class="se-tick" style="left:${this.xOf(s)}px"></div>`;
     h += `</div>`;
@@ -1578,14 +1746,16 @@ export class WorldView extends ItemView {
       if (key === 'scenes') {
         h += head(key, this.say(SECTION_LABEL[key]));
         if (ui.open[key]) {
-          h += `<div class="se-track" style="width:${W}px;height:${ROWS * ROW_H + 8}px">`;
           const bySlot = new Map<number, SceneEntry[]>();
           for (const s of tl.scenes) (bySlot.get(s.slot) ?? bySlot.set(s.slot, []).get(s.slot)!).push(s);
+          // As tall as the tallest stack of scenes happening at the same time (one row when none are).
+          const rows = Math.min(ROWS, Math.max(1, ...[...bySlot.values()].map(l => l.length)));
+          h += `<div class="se-track" style="width:${W}px;height:${rows * ROW_H + 8}px">`;
           for (const [slot, list] of bySlot) {
             const vis = list.slice(0, ROWS); if (cur && list.includes(cur) && !vis.includes(cur)) vis[ROWS - 1] = cur;
             vis.forEach((s, k) => {
               const pov = s.pov ? p.get(s.pov) : undefined;
-              const kind = s.kind === 'flashback' ? ' · flashback' : s.kind === 'parallel' ? ` · same time as ${this.words.scene.toLowerCase()} ${s.ref ?? ''}` : '';
+              const kind = esc(s.kind === 'flashback' ? ' · flashback' : s.kind === 'parallel' ? ` · same time as ${this.words.scene.toLowerCase()} ${s.ref ?? ''}` : '');
               h += `<div class="se-clip ${s === cur ? 'is-cur' : ''} ${s.kind === 'flashback' ? 'is-flash' : ''} ${pov ? '' : 'is-nopov'}" data-scene="${s.order}" style="--c:${pov ? this.povColor.get(pov.id) : '#8a8794'};left:${this.xOf(slot) + 1}px;top:${4 + k * ROW_H}px;width:${Math.max(5, px - 2)}px" title="Scene ${s.order} · ${esc(s.label)}${pov ? ' · ' + esc(pov.name) : ' · no POV set'}${kind}\nClick: show on the map · double-click: open it">${px >= 22 ? s.order : ''}</div>`;
             });
             if (list.length > ROWS) h += `<div class="se-more" style="left:${this.xOf(slot) + 1}px;top:${4 + ROWS * ROW_H - 2}px">+${list.length - ROWS}</div>`;
@@ -1636,6 +1806,51 @@ export class WorldView extends ItemView {
   }
   /** The scene that moves story time on at a slot (the only kind that can start a moment). */
   private startSceneAt(slot: number) { return this.tl?.scenes.find(s => s.slot === slot && s.kind === 'next'); }
+  /** A scene dropped on the timeline: `on` another scene → same time as it; `before` a slot → its chapter moves there in reading order. */
+  private async dropScene(p: Project, order: number, to: { on?: number; before?: number } | null) {
+    const tl = this.tl, s = tl?.scenes[order - 1]; if (!tl || !s || !to) return;
+    const sc = this.words.scene.toLowerCase(), old = { with: s.span.meta.with, flash: s.span.meta.flash };
+    if (to.on !== undefined) {
+      const t = tl.scenes[to.on - 1]; if (!t) return;
+      // Point at the scene that moves time on at that slot, so two scenes never point at each other.
+      const anchor = this.startSceneAt(t.slot) ?? t;
+      if (anchor === s || s.slot === t.slot) { new Notice(this.say(`Scene ${s.order} already happens at that time.`)); return; }
+      const set = { with: await p.ensureSceneId(anchor), flash: undefined };
+      p.checkpoint({ undo: () => p.setSceneMeta(s.file, s.index, old), redo: () => p.setSceneMeta(s.file, s.index, set), what: this.say(`making scene ${s.order} happen alongside scene ${anchor.order}`) });
+      await p.setSceneMeta(s.file, s.index, set);
+      new Notice(this.say(`Scene ${s.order} now happens at the same time as scene ${anchor.order}.`));
+      return;
+    }
+    if (to.before === undefined) return;
+    const order0 = p.chapters(), mine = s.file, order1 = order0.filter(f => f !== mine);
+    // The chapter it lands in front of; landing between two scenes of one chapter puts it after that chapter.
+    const next = tl.scenes.find(x => x.kind === 'next' && x.slot >= to.before! && x.file !== mine);
+    if (!next) order1.push(mine); else { const i = order1.indexOf(next.file); order1.splice(next.index > 0 ? i + 1 : i, 0, mine); }
+    const moved = order1.some((f, i) => f !== order0[i]), alone = !!(old.with || old.flash);
+    if (!moved && !alone) return;
+    const clear = { with: undefined, flash: undefined };
+    p.checkpoint({
+      undo: async () => { if (moved) await p.reorderChapters(order0); if (alone) await p.setSceneMeta(s.file, s.index, old); },
+      redo: async () => { if (alone) await p.setSceneMeta(s.file, s.index, clear); if (moved) await p.reorderChapters(order1); },
+      what: moved ? `moving ${p.chapterTitle(mine)}` : this.say(`giving scene ${s.order} its own time`),
+    });
+    if (alone) await p.setSceneMeta(s.file, s.index, clear);
+    if (moved) await p.reorderChapters(order1);
+    const title = p.chapterTitle(mine);
+    new Notice(moved ? `${title} is now chapter ${order1.indexOf(mine) + 1}.` : this.say(`Scene ${s.order} no longer happens at the same time as another ${sc}.`));
+  }
+  /** An event dragged to another scene's slot. */
+  private async dropEvent(p: Project, id: string, fromOrder: number, slot: number | undefined) {
+    const tl = this.tl, from = tl?.scenes[fromOrder - 1], to = slot === undefined ? undefined : this.sceneAtSlot(slot), x = p.get(id);
+    if (!from || !to || !x || to === from) return;
+    const entry = p.data.track[id]?.find(e => e.s === from.id); if (!entry) return;
+    p.checkpoint({ what: `moving ${x.name}` });
+    const sid = await p.ensureSceneId(to), { s: _s, ...rest } = entry; void _s;
+    p.data.track[id] = p.data.track[id].filter(e => e !== entry);
+    M.setTrack(p.data, id, sid, rest);
+    p.invalidateScenes(); p.saveSoon();
+    new Notice(this.say(`${x.name} now happens in scene ${to.order}.`));
+  }
   private closeMomentBox() { this.contentEl.querySelector('.se-momentbox')?.remove(); }
   /** Small editor under a moment on the ruler: name, note, time skip, delete. */
   private editMoment(id: string, anchor: HTMLElement) {
@@ -1655,9 +1870,9 @@ export class WorldView extends ItemView {
     const band = this.tl?.t.bands.find(b => b.moment.id === id), start = band && this.startSceneAt(band.start);
     if (band && start) box.createDiv({ cls: 'se-sub', text: this.say(`Starts at scene ${start.order} · ${band.end - band.start} scene${band.end - band.start > 1 ? 's' : ''} long. Drag its left edge on the ruler to change that.`) });
     const acts = box.createDiv('se-acts');
-    const del = acts.createEl('button', { cls: 'se-hb se-ghost se-left', text: this.say('Delete moment') });
+    const del = acts.createEl('button', { cls: 'se-hb se-ghost se-left', text: 'Delete' });
     
-    confirmClick(del, 'Sure? Click again', () => { this.closeMomentBox(); void p.deleteMoment(id); });
+    confirmClick(del, 'Confirm', () => { this.closeMomentBox(); void p.deleteMoment(id); });
     const done = acts.createEl('button', { cls: 'se-hb mod-cta', text: 'Done' }); done.onclick = () => this.closeMomentBox();
     box.onkeydown = e => { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.closeMomentBox(); } };
     box.style.top = `${r.bottom - c.top + 6}px`;
@@ -1828,13 +2043,59 @@ export class WorldView extends ItemView {
       dragKey = null; if (p) this.renderTimeline(p);
     });
     tl.addEventListener('dragend', () => { dragKey = null; const p = this.project; if (p) this.renderTimeline(p); });
+    // Scenes: drop one on another and they happen at the same time; drop it between scenes and its chapter moves there.
+    // Events: drag a diamond to another scene to move the event there.
+    let held: { scene: boolean; el: HTMLElement; x: number; y: number; order: number; id: string; left: number; moved: boolean } | null = null;
+    let drop: { on?: number; before?: number; slot?: number } | null = null, swallowClick = false;
+    tl.addEventListener('click', e => { if (swallowClick) { swallowClick = false; e.stopImmediatePropagation(); } }, { capture: true });
+    tl.addEventListener('pointerdown', e => {
+      const el = e.button === 0 ? (e.target as HTMLElement).closest('.se-clip, .se-ev') as HTMLElement | null : null; if (!el) return;
+      held = { scene: el.hasClass('se-clip'), el, x: e.clientX, y: e.clientY, order: Number(el.dataset.scene), id: el.dataset.id ?? '', left: parseFloat(el.style.left), moved: false };
+    });
+    const clearMarks = () => { tl.querySelectorAll('.se-dropline').forEach(n => n.remove()); tl.querySelectorAll('.is-drop-on').forEach(n => n.removeClass('is-drop-on')); };
+    this.registerDomEvent(window, 'pointermove', e => {
+      const h = held; if (!h) return;
+      if (!h.moved) { if (Math.hypot(e.clientX - h.x, e.clientY - h.y) < 5) return; h.moved = true; h.el.addClass('is-dragging'); tl.addClass('is-moving'); }
+      clearMarks(); drop = null;
+      if (!h.scene) {
+        const slot = this.slotAt(e.clientX); h.el.style.left = `${this.xOf(slot) + this.px / 2}px`; drop = { slot }; return;
+      }
+      h.el.style.left = `${h.left + e.clientX - h.x}px`;
+      const under = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest('.se-clip') as HTMLElement | null;
+      if (under && under !== h.el) { under.addClass('is-drop-on'); drop = { on: Number(under.dataset.scene) }; return; }
+      const x = e.clientX - tl.getBoundingClientRect().left, slots = this.tl?.t.slots ?? 0; let before = 0;
+      for (let s = 0; s <= slots; s++) if (Math.abs(this.xOf(s) - x) < Math.abs(this.xOf(before) - x)) before = s;
+      const line = (h.el.parentElement ?? tl).createDiv('se-dropline'); line.style.left = `${this.xOf(before) - 1}px`;
+      drop = { before };
+    });
+    // Esc, or letting go outside the window, puts the dragged scene or event back where it was.
+    const cancel = () => { const h = held; held = null; drop = null; if (!h?.moved) return; clearMarks(); tl.removeClass('is-moving'); h.el.removeClass('is-dragging'); const p = this.project; if (p) this.renderTimeline(p); };
+    this.registerDomEvent(document, 'keydown', e => { if (e.key === 'Escape' && held?.moved) { e.preventDefault(); e.stopPropagation(); cancel(); } }, { capture: true });
+    this.registerDomEvent(window, 'blur', cancel);
+    this.registerDomEvent(window, 'pointercancel', cancel);
+    this.registerDomEvent(window, 'pointerup', () => {
+      const h = held, to = drop; held = null; drop = null; if (!h?.moved) return;
+      swallowClick = true; window.setTimeout(() => { swallowClick = false; }, 0);
+      clearMarks(); tl.removeClass('is-moving'); h.el.removeClass('is-dragging');
+      const p = this.project; if (!p) return;
+      const done = h.scene ? this.dropScene(p, h.order, to) : this.dropEvent(p, h.id, h.order, to?.slot);
+      void done.catch(err => new Notice(`Couldn't move it: ${(err as Error).message}`)).finally(() => this.renderTimeline(p));
+    });
     // On the ruler: drag to scrub, click a moment to edit it, drag a moment's edge to move where it starts.
     let scrub = false, band: { id: string; x: number; el: HTMLElement } | null = null, gap: { m: M.Moment; x: number; g0: number } | null = null, lastGap: { id: string; at: number } | null = null;
-    let edge: { id: string; el: HTMLElement; min: number; max: number; slot: number; start: number } | null = null;
+    let edge: { id: string; el: HTMLElement; min: number; max: number; slot: number; start: number; off?: number } | null = null;
+    let tail: { id: string; el: HTMLElement; min: number; max: number; slot: number; end: number } | null = null;
     tl.addEventListener('pointerdown', e => {
       const t = e.target as HTMLElement;
       if (!t.closest('.se-ruler')) return;
       tl.setPointerCapture(e.pointerId);
+      const te = t.closest('[data-moment-end]') as HTMLElement | null;
+      if (te && this.tl) {
+        const bands = this.tl.t.bands, b = bands.find(x => x.moment.id === te.dataset.momentEnd); if (!b) return;
+        const next = bands.filter(x => x.start >= b.end).map(x => x.start).sort((x, y) => x - y)[0] ?? this.tl.t.slots;
+        tail = { id: b.moment.id, el: te, min: b.start + 1, max: next, slot: b.end, end: b.end };
+        te.addClass('is-dragging'); e.preventDefault(); return;
+      }
       const ed = t.closest('.se-edge') as HTMLElement | null;
       if (ed && this.tl) {
         const bands = this.tl.t.bands, i = bands.findIndex(x => x.moment.id === ed.dataset.moment); if (i < 0) return;
@@ -1859,23 +2120,50 @@ export class WorldView extends ItemView {
         if (g !== gapOf(gap.m)) { gap.m.gap = g; const p = this.project; if (p) this.renderTimeline(p); }
         return;
       }
+      if (tail) {
+        const x = e.clientX - tl.getBoundingClientRect().left; let best = tail.min;
+        for (let s = tail.min; s <= tail.max; s++) if (Math.abs(this.xOf(s) - x) < Math.abs(this.xOf(best) - x)) best = s;
+        tail.slot = best; tail.el.style.left = `${this.xOf(best) - 4}px`;
+        const last = this.startSceneAt(best - 1); tail.el.dataset.tip = last ? `ends after ${this.words.scene.toLowerCase()} ${last.order}` : '';
+        return;
+      }
       if (edge) {
-        const x = e.clientX - tl.getBoundingClientRect().left; let best = edge.min;
+        const x = e.clientX - tl.getBoundingClientRect().left - (edge.off ?? 0); let best = edge.min;
         for (let s = edge.min; s <= edge.max; s++) if (Math.abs(this.xOf(s) - x) < Math.abs(this.xOf(best) - x)) best = s;
         edge.slot = best; edge.el.style.left = `${this.xOf(best) - 4}px`;
         const sc = this.startSceneAt(best); edge.el.dataset.tip = sc ? `starts at ${this.words.scene.toLowerCase()} ${sc.order}` : '';
         return;
       }
-      if (band && Math.abs(e.clientX - band.x) > 4) { band = null; scrub = true; }
+      if (band && Math.abs(e.clientX - band.x) > 4) {
+        // Dragging a moment moves where it starts (the same as dragging its left edge).
+        const ed = tl.querySelector(`.se-edge[data-moment="${CSS.escape(band.id)}"]`) as HTMLElement | null, bands = this.tl?.t.bands ?? [], i = bands.findIndex(x => x.moment.id === band!.id);
+        const grabbedAt = band.x; band = null;
+        if (ed && i >= 0) { edge = { id: bands[i].moment.id, el: ed, min: i > 0 ? bands[i - 1].start + 1 : 0, max: bands[i].end - 1, slot: bands[i].start, start: bands[i].start, off: grabbedAt - tl.getBoundingClientRect().left - this.xOf(bands[i].start) }; ed.addClass('is-dragging'); }
+        else scrub = true;
+      }
       if (scrub) this.goSlot(this.slotAt(e.clientX));
     });
     tl.addEventListener('pointerup', () => {
       const p = this.project;
       if (gap) { gap = null; p?.saveQuiet(); return; }
+      if (tail && p) {
+        const tt = tail; tail = null; tt.el.removeClass('is-dragging');
+        const m = p.moment(tt.id), last = this.startSceneAt(tt.slot - 1);
+        if (m && last && tt.slot !== tt.end) {
+          p.checkpoint({ what: `changing where ${m.label} ends`, keys: ['moments'] });
+          const finish = (id?: string) => { if (id && tt.slot < tt.max) m.until = id; else delete m.until; p.invalidateScenes(); p.saveSoon(); };
+          if (tt.slot < tt.max) void p.ensureSceneId(last).then(finish); else finish();
+        } else this.renderTimeline(p);
+        return;
+      }
       if (edge && p) {
         const ed = edge; edge = null; ed.el.removeClass('is-dragging');
         const sc = this.startSceneAt(ed.slot);
-        if (ed.slot !== ed.start && sc) void p.startMoment(sc, ed.id);
+        const was = this.startSceneAt(ed.start);
+        if (ed.slot !== ed.start && sc) {
+          if (was) p.checkpoint({ undo: () => p.startMoment(was, ed.id), redo: () => p.startMoment(sc, ed.id), what: `moving where ${p.moment(ed.id)?.label ?? 'the moment'} starts` });
+          void p.startMoment(sc, ed.id);
+        } else this.renderTimeline(p);
       }
       if (band) this.editMoment(band.id, band.el);
       band = null; scrub = false;
@@ -1900,6 +2188,36 @@ export class WorldView extends ItemView {
 }
 
 /** The built-in icons in a grid (grouped), plus an image from the vault, or none. */
+/** Removing a story: what goes and what stays, said plainly, with the World folder as an extra choice. */
+class RemoveStoryModal extends Modal {
+  constructor(app: App, private p: Project, private done: (world: boolean) => Promise<void>) { super(app); }
+  onOpen() {
+    const p = this.p, c = this.contentEl, chapters = p.chapters().length, pieces = p.pieces.size;
+    this.titleEl.setText(`Remove “${p.name}”?`);
+    c.createEl('p', { text: `Its map, timeline and settings (${p.dataPath}) go to the trash. ${chapters === 1 ? 'Your chapter stays' : `Your ${chapters} chapters stay`} where ${chapters === 1 ? 'it is' : 'they are'}.` });
+    const row = c.createEl('label', { cls: 'se-check' });
+    const world = row.createEl('input', { type: 'checkbox' });
+    row.appendText(` Also move the World folder to the trash (${pieces} note${pieces === 1 ? '' : 's'})`);
+    const acts = c.createDiv('se-acts');
+    acts.createEl('button', { text: 'Cancel' }).onclick = () => this.close();
+    const go = acts.createEl('button', { cls: 'mod-warning', text: 'Remove' });
+    go.onclick = async () => { go.disabled = true; await this.done(world.checked); this.close(); };
+  }
+  onClose() { this.contentEl.empty(); }
+}
+/** One name field with a button; Enter confirms. */
+export class NameModal extends Modal {
+  constructor(app: App, private heading: string, private value: string, private done: (v: string) => Promise<boolean>, private button = 'Rename') { super(app); }
+  onOpen() {
+    this.titleEl.setText(this.heading);
+    const input = this.contentEl.createEl('input', { cls: 'se-namefield' }); input.value = this.value;
+    const ok = async () => { const v = input.value.trim(); if (v && await this.done(v)) this.close(); };
+    input.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); void ok(); } };
+    this.contentEl.createDiv('se-acts').createEl('button', { cls: 'mod-cta', text: this.button }).onclick = () => void ok();
+    input.focus(); input.select();
+  }
+  onClose() { this.contentEl.empty(); }
+}
 class IconPicker extends Modal {
   constructor(app: import('obsidian').App, private name: string, private current: string | null, private chosen: (ref: string | null) => void) { super(app); }
   onOpen() {

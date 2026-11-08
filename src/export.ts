@@ -5,6 +5,7 @@
 import { App, Modal, Notice, TFile, normalizePath } from 'obsidian';
 import * as M from './model';
 import type { Project } from './project';
+import { tip } from './tip';
 import { buildDocx, buildEpub, buildPrintHtml, chapterBlocks, Chapter, DropCapFit, webChapter } from './book';
 import baskerville from '../fonts/LibreBaskerville.woff2';
 import baskervilleItalic from '../fonts/LibreBaskerville-Italic.woff2';
@@ -71,11 +72,19 @@ export class BookExportModal extends Modal {
       for (const [id, s] of Object.entries(M.PAGE_SIZES)) size.createEl('option', { text: s.label, value: id });
       size.value = M.PAGE_SIZES[book.pageSize ?? ''] ? book.pageSize! : '6x9';
     }
+    // PDF for a printed book: a wider margin on the binding side, which alternates between left and right pages.
+    let mirror: HTMLInputElement | null = null;
+    if (this.format === 'pdf') {
+      const r = c.createEl('label', { cls: 'se-style-row se-check' });
+      mirror = r.createEl('input'); mirror.type = 'checkbox'; mirror.checked = !!book.mirror;
+      r.appendText(' Mirrored margins (for a printed book)');
+      tip(r, 'Leave off for reading on screen: every page lines up. On for printing: room for the binding, on alternating sides.');
+    }
     c.createDiv({ cls: 'se-export-where', text: `${p.chapters().length} chapters · saved in ${p.folder ? p.folder + '/' : ''}Exports` });
     const acts = c.createDiv('se-style-acts');
     const go = acts.createEl('button', { cls: 'mod-cta', text: 'Export' });
     go.onclick = async () => {
-      const info: M.BookInfo = { title: title.value.trim() || p.name, author: author.value.trim(), language: lang.value.trim() || 'en', pageSize: size?.value ?? book.pageSize };
+      const info: M.BookInfo = { title: title.value.trim() || p.name, author: author.value.trim(), language: lang.value.trim() || 'en', pageSize: size?.value ?? book.pageSize, ...(mirror ? (mirror.checked ? { mirror: true } : {}) : book.mirror ? { mirror: true } : {}) };
       p.data.book = info; p.saveQuiet();
       go.disabled = true; go.setText('Exporting…');
       try {

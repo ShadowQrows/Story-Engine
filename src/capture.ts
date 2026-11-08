@@ -11,6 +11,7 @@
 import { App, Notice, TFile } from 'obsidian';
 import * as M from './model';
 import type { Project, SceneEntry } from './project';
+import { tip } from './tip';
 
 type Sel = { text: string; rect: DOMRect; file: TFile | null };
 interface Ctx { project: Project; file: TFile | null; scene: SceneEntry | undefined; anchor: DOMRect }
@@ -117,7 +118,7 @@ export class Capture {
       b.dataset.type = t.id; b.style.setProperty('--se-c', t.color);
       b.append(el('span', 'se-sw'), document.createTextNode(t.label)); grid.append(b);
     }
-    const add = this.button('+ New type', () => {
+    const add = this.button('New type', () => {
       if (grid.querySelector('.se-inline')) return;
       const row = el('div', 'se-inline'); const input = el('input'); input.placeholder = 'Type name, e.g. Spirit';
       const kind = el('select', 'dropdown'); for (const [v, l] of M.BEHAVIOURS) { const o = el('option', '', l); o.value = v; kind.append(o); }
@@ -156,7 +157,7 @@ export class Capture {
   private styleChips(project: Project, styles: M.LineStyle[], pick: (s: M.LineStyle) => void) {
     const wrap = el('div', 'se-presets');
     for (const s of styles) { const b = this.button('', () => pick(s), 'se-preset'); b.append(this.swatch(s), document.createTextNode(s.label)); wrap.append(b); }
-    const add = this.button('+ New connection type', () => {
+    const add = this.button('New connection type', () => {
       if (wrap.querySelector('.se-inline')) return;
       const row = el('div', 'se-inline'); const input = el('input'); input.placeholder = 'e.g. Sworn sword';
       const ok = () => { const v = input.value.trim(); if (!v) return; const [s] = project.addStyles([v]); pick(s ?? project.style(v)); };
@@ -187,7 +188,7 @@ export class Capture {
     if (name && !manual) nodes.push(el('div', 'se-small', `Change the name if the text uses a nickname. “${name}” is kept as another name for it.`));
     if (passage) nodes.push(el('div', 'se-small', 'The highlighted passage becomes its description.'));
     nodes.push(grid);
-    if (name && !manual && project.pieces.size) { const row = el('div', 'se-acts'); row.append(this.button('It\'s another name for…', () => this.aliasMenu(name), 'se-btn se-btn-ghost se-btn-small se-left')); nodes.push(row); }
+    if (name && !manual && project.pieces.size) { const row = el('div', 'se-acts'); row.append(this.button('Another name for…', () => this.aliasMenu(name), 'se-btn se-btn-ghost se-btn-small se-left')); nodes.push(row); }
     this.render(nodes);
     if (!name || manual) window.setTimeout(() => nameInput.focus(), 0);
   }
@@ -250,7 +251,7 @@ export class Capture {
       const sug = this.suggest();
       this.sug = sug;
       const noPlace = !c.scene?.where;
-      const nodes: (Node | false)[] = [head, this.ask(['Where '], M.say(M.wordsOf(c.project.data), `is ${p.name} in this scene?${noPlace ? ' This scene has no location yet: pick or name one and it becomes the scene\'s location too.' : ''}`))];
+      const nodes: (Node | false)[] = [head, this.ask(['Where '], M.say(M.wordsOf(c.project.data), `is ${p.name} in this scene?${noPlace ? ' Click inside a location and it becomes the scene\'s location too.' : ''}`))];
       if (sug) { const b = this.button('', () => { this.where = sug.entry; this.next(); }, 'se-suggest'); b.append(el('span', 'se-suggest-k', 'Suggested'), document.createTextNode(sug.label)); nodes.push(b); }
       nodes.push(this.miniMap({ mode: 'spot', exclude: p.id, focus: sug?.place ?? null, onPick: async r => {
         this.where = r.entry ?? null;
@@ -292,13 +293,13 @@ export class Capture {
     const frag = document.createDocumentFragment();
     frag.append(`Added ${made.map(x => x.name).join(', ')}. `);
     const u = el('a', 'se-undo-link', 'Undo'); u.href = '#';
-    u.addEventListener('click', e => { e.preventDefault(); void Promise.all(made.map(x => project.deletePiece(x))).then(() => new Notice('Removed.')); });
+    u.addEventListener('click', e => { e.preventDefault(); void Promise.all(made.map(x => project.deletePiece(x, true))).then(() => new Notice('Removed.')); });
     frag.append(u);
     new Notice(frag as unknown as string, 8000);
   }
   private async undo() {
     const c = this.ctx; if (!c) return;
-    for (const x of [this.piece, ...this.created]) if (x) await c.project.deletePiece(x);
+    for (const x of [this.piece, ...this.created]) if (x) await c.project.deletePiece(x, true);
     new Notice('Removed.');
     this.close();
   }
@@ -335,19 +336,20 @@ export class Capture {
     this.host.openPiece(project, p.id);
     const pl = project.get(scene?.where), b = project.behaviour(p), sc = M.wordsOf(project.data).scene.toLowerCase();
     const menu = el('div', 'se-menu');
-    const item = (icon: string, text: string, fn: () => void) => { const bt = this.button('', fn); bt.append(el('span', 'se-mi', icon), document.createTextNode(text)); menu.append(bt); };
-    item('✎', 'Add to description', () => this.quickDesc(p));
-    item('⟷', 'Add a connection', () => this.quickConn(p));
-    if (b !== 'place' && scene) {
-      item('◎', `Here in this ${sc}${pl ? ': ' + pl.name : ''}`, async () => {
+    const item = (text: string, fn: () => void, hint?: string) => { const bt = this.button(text, fn); if (hint) tip(bt, hint); menu.append(bt); };
+    item('Add description', () => this.quickDesc(p));
+    item('Add connection', () => this.quickConn(p));
+    const deadNow = !!scene && b === 'token' && !!project.cachedTimeline() && !!M.deathAt(project.data, p.id, scene.slot, project.cachedTimeline()!.t.slotOfScene);
+    if (b !== 'place' && scene && !deadNow) {
+      item('In this scene', async () => {
         const prev = project.where(p, scene.slot);
-        await project.place(p, scene, pl ? { place: pl.id } : prev?.place ? { place: prev.place } : prev?.pt ? { pt: prev.pt } : {});
+        project.checkpoint({ what: `placing ${p.name}` }); await project.place(p, scene, pl ? { place: pl.id } : prev?.place ? { place: prev.place } : prev?.pt ? { pt: prev.pt } : {});
         project.setView(scene.order); new Notice(`${p.name} is in ${sc} ${scene.order}${pl ? ' at ' + pl.name : ''}.`); this.close();
-      });
-      if (b === 'token') item('✝', `Dead from this ${sc} on`, async () => { await project.place(p, scene, { gone: true, dead: true }); project.setView(scene.order); new Notice(`${p.name} is dead from ${sc} ${scene.order} on, and listed under Dead.`); this.close(); });
-      item('✕', `Gone from this ${sc} on`, async () => { await project.place(p, scene, { gone: true }); project.setView(scene.order); new Notice(`${p.name} is off the map from ${sc} ${scene.order} on.`); this.close(); });
-    } else if (scene) item('◎', `This ${sc} takes place here`, () => { void project.setSceneMeta(file, scene.index, { where: p.id }); this.close(); });
-    if (p.type === 'character' && scene) item('👁', `This ${sc} is ${p.name}'s POV`, () => { void project.setSceneMeta(file, scene.index, { pov: p.id }); this.close(); });
+      }, `On the map in ${sc} ${scene.order}${pl ? ', at ' + pl.name : ''}`);
+      if (b === 'token') item('Dies here', async () => { project.checkpoint({ what: `${p.name}'s death` }); await project.markGone(p, scene, true); project.setView(scene.order); new Notice(`${p.name} is dead from ${sc} ${scene.order} on, and listed under Dead.`); this.close(); }, `Dead from ${sc} ${scene.order} on`);
+      item('Gone from here', async () => { project.checkpoint({ what: `marking ${p.name} gone` }); await project.markGone(p, scene); project.setView(scene.order); new Notice(`${p.name} is off the map from ${sc} ${scene.order} on.`); this.close(); }, `Off the map from ${sc} ${scene.order} on`);
+    } else if (scene) item('Set as scene location', () => { void project.setSceneMeta(file, scene.index, { where: p.id }); this.close(); }, `${M.wordsOf(project.data).scene} ${scene.order} takes place here`);
+    if (p.type === 'character' && scene) item('Set as POV', () => { void project.setSceneMeta(file, scene.index, { pov: p.id }); this.close(); }, `${M.wordsOf(project.data).scene} ${scene.order} is seen through ${p.name}'s eyes`);
     this.render([this.header(`${p.name} · ${project.type(p.type).label}`), menu]);
   }
   private drawQuickConn() {
@@ -391,7 +393,7 @@ export class Capture {
     const f = scene.file, i = scene.index, meta = scene.span.meta;
     const say = (t: string) => M.say(M.wordsOf(project.data), t);
     const set = async (patch: Partial<M.SceneMeta>) => { await project.setSceneMeta(f, i, patch); project.setView(scene.order); this.close(); };
-    const big = (title: string, sub: string, fn: () => void, on = false) => { const b = this.button('', fn, `se-bigchoice ${on ? 'is-current' : ''}`); b.append(document.createTextNode(title), el('small', '', sub)); return b; };
+    const big = (title: string, sub: string, fn: () => void, on = false) => { const b = this.button(title, fn, `se-bigchoice ${on ? 'is-current' : ''}`); tip(b, sub); return b; };
     const named = el('div', 'se-newmoment');
     const nameRow = (placeholder: string, skip: boolean) => {
       named.replaceChildren();
@@ -429,7 +431,7 @@ export class Capture {
       for (const m of project.data.moments) existing.append(this.button(m.skip ? `⤳ ${M.skipLabel(m)}${M.skipLabel(m) !== m.label ? ' · ' + m.label : ''}` : m.label, async () => { await project.startMoment(scene, m.id); project.setView(scene.order); this.close(); }, `se-preset ${meta.moment === m.id ? 'is-current' : ''}`));
       this.render([this.header(say(`Scene ${scene.order} · when`)),
         big('Continues', say('A little after the scene before (the default).'), () => void set({ moment: undefined, with: undefined, flash: undefined }), plain),
-        big(say('Starts a new moment…'), 'Give this point in time a name: “Day 2”, “The Siege”, “Spring 298”.', () => nameRow(say('Moment name, e.g. Day 2'), false), !!meta.moment && !project.moment(meta.moment)?.skip),
+        big(say('New moment…'), 'Give this point in time a name: “Day 2”, “The Siege”, “Spring 298”.', () => nameRow(say('Moment name, e.g. Day 2'), false), !!meta.moment && !project.moment(meta.moment)?.skip),
         big('Time skip…', 'Jumps ahead: “Two years later”. Shown as a break on the timeline.', () => nameRow('e.g. Two years later', true), !!project.moment(meta.moment)?.skip),
         named,
         big('Same time as…', say('A parallel chapter: happens alongside an earlier scene.'), () => view('with'), !!meta.with),
@@ -509,11 +511,12 @@ export class Capture {
       if (opts.mode === 'point') { void opts.onPick({ pt, m: mapId }); return; }
       const inArea = pinPlace ?? M.placeAt(d, mapId, pt, pr.isPlaceId, opts.exclude);
       if (opts.mode === 'place' && inArea) { void opts.onPick({ place: inArea, m: mapId }); return; }
-      if (opts.mode === 'spot' && (inArea || c.scene?.where)) { void opts.onPick({ entry: pinPlace ? { place: pinPlace } : pr.spot(mapId, pt), m: mapId }); return; }
-      // Empty ground: name a new place here (or, for a piece, just leave it at this spot).
+      // A piece goes exactly where it's put: inside a location's area it's at that location, anywhere else just at that spot.
+      if (opts.mode === 'spot') { void opts.onPick({ entry: pinPlace ? { place: pinPlace } : pr.spot(mapId, pt), m: mapId }); return; }
+      // Choosing where a scene happens, on empty ground: name a new location there.
       this.pop.querySelector('.se-newplace')?.remove();
       const row = el('div', 'se-acts se-newplace');
-      const input = el('input', 'se-namefield'); input.placeholder = opts.mode === 'spot' ? 'Name a new location here (optional)' : 'Name this location (e.g. Farmhouse)';
+      const input = el('input', 'se-namefield'); input.placeholder = 'Name this location (e.g. Farmhouse)';
       const placeType = d.types.find(t => t.behaviour === 'place')?.id ?? 'place';
       const ok = async () => {
         const v = input.value.trim(); if (!v) return;
@@ -522,7 +525,6 @@ export class Capture {
       };
       input.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); void ok(); } });
       row.append(input, this.button('Add', () => void ok(), 'se-btn mod-cta se-btn-small'));
-      if (opts.mode === 'spot') row.append(this.button('Just this spot', () => void opts.onPick({ entry: { pt, ...(mapId !== M.MAIN_MAP ? { m: mapId } : {}) }, m: mapId }), 'se-btn se-btn-small'));
       host.after(row); input.focus();
       if (this.ctx) this.place(this.ctx.anchor);
     });

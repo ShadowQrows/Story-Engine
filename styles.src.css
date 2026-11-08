@@ -119,7 +119,7 @@ body {
 body.se-awaiting .se-name { cursor: pointer; }
 
 /* Scene bar */
-.se-scenebar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 2px 0 10px; padding: 5px 8px; border: 1px dashed var(--background-modifier-border); border-radius: 10px; font-family: var(--font-interface); font-size: var(--font-ui-smaller); text-indent: 0; line-height: 1.4; user-select: none; }
+.se-scenebar { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px; width: fit-content; max-width: 100%; margin: 2px auto 10px; padding: 5px 8px; border: 1px dashed var(--background-modifier-border); border-radius: 10px; font-family: var(--font-interface); font-size: var(--font-ui-smaller); text-indent: 0; line-height: 1.4; user-select: none; }
 .se-scenebar-label { text-transform: uppercase; letter-spacing: .1em; color: var(--text-faint); font-size: 10.5px; margin-right: 2px; }
 .se-chip { display: inline-flex !important; align-items: center; height: auto !important; padding: 2px 10px !important; border-radius: 999px !important; font-size: var(--font-ui-smaller) !important; box-shadow: none !important; background: var(--background-secondary) !important; border: 1px solid var(--background-modifier-border) !important; color: var(--text-normal) !important; cursor: pointer; }
 .se-chip:hover { border-color: var(--interactive-accent) !important; }
@@ -216,7 +216,7 @@ body.se-awaiting .se-name { cursor: copy; }
 @media print { .se-lookbar { display: none !important; } }
 
 /* ══════════ World view ══════════ */
-.se-world { --se-map-bg: #1c2119; --se-gold: #f2c94c; --se-sepia: #b8a27a; --se-ev: #e07a86;
+.se-world { --se-map-bg: #000; --se-gold: #f2c94c; --se-sepia: #b8a27a; --se-ev: #e07a86;
   padding: 8px 12px 10px !important; display: flex; flex-direction: column; gap: 8px; overflow: hidden !important; position: relative; font-size: var(--font-ui-small); outline: none; }
 .se-w-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: none; }
 .se-w-title { font: 700 1.05em var(--mm-font, Georgia, serif); margin: 0; }
@@ -239,10 +239,14 @@ body.se-awaiting .se-name { cursor: copy; }
 .se-mapcol { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; }
 .se-map { position: relative; flex: none; border-radius: 12px; overflow: hidden; border: 1px solid var(--background-modifier-border); background: var(--se-map-bg); touch-action: none; outline: none; cursor: default; }
 .se-map.is-space { cursor: grab; } .se-map.is-panning { cursor: grabbing; } .se-map.is-placing, .se-map.is-putting { cursor: crosshair; }
+.se-map.is-dropping { outline: 2px dashed var(--interactive-accent); outline-offset: -4px; }
 .se-stage { position: absolute; left: 0; top: 0; width: 1000px; height: 1000px; transform-origin: 0 0; --inv: 1; }
 .se-map-img { position: absolute; inset: 0; width: 100%; height: 100%; user-select: none; pointer-events: none; transition: filter .35s; }
-.se-map-blank { position: absolute; inset: 0; background-color: #20251d; background-image: linear-gradient(#ffffff0d 1px, transparent 1px), linear-gradient(90deg, #ffffff0d 1px, transparent 1px); background-size: 50px 50px; }
-.se-blank-hint { position: absolute; left: 50%; bottom: 60px; transform: translateX(-50%) scale(var(--inv)); transform-origin: 50% 100%; display: flex; flex-direction: column; align-items: center; gap: 6px; color: #bbb; text-align: center; width: 360px; }
+/* The blank sheet: a mid-dark grey with a light grid and an edge, on the black around the map. */
+.se-map-blank { position: absolute; inset: 0; background-color: #3b3b3b; background-image: linear-gradient(#ffffff10 1px, transparent 1px), linear-gradient(90deg, #ffffff10 1px, transparent 1px); background-size: 50px 50px; border: 1px solid #ffffff26; border-radius: 4px; }
+.se-blank-hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 6; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 18px 22px; border-radius: 10px; background: var(--background-primary); border: 1px solid var(--background-modifier-border); box-shadow: 0 6px 24px #0006; text-align: center; max-width: 320px; }
+.se-blank-hint h4 { margin: 0; }
+.se-blank-hint .se-acts { margin-top: 8px; }
 .se-blank-hint .se-small { color: #999; }
 .se-lines, .se-trail { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; transition: filter .35s; }
 .se-lines text { fill: #f4f1ea; text-anchor: middle; paint-order: stroke; stroke: #000; }
@@ -336,6 +340,9 @@ body.se-awaiting .se-name { cursor: copy; }
 .se-jl button { display: flex !important; justify-content: flex-start; gap: 8px; height: auto !important; padding: 2px 6px !important; background: transparent !important; box-shadow: none !important; font-size: var(--font-ui-smaller) !important; text-align: left; }
 .se-jl button:hover { background: var(--background-modifier-hover) !important; }
 .se-jl button.is-now { background: color-mix(in srgb, var(--interactive-accent) 18%, transparent) !important; }
+.se-jl-x { margin-left: auto; padding: 0 4px; border-radius: 4px; color: var(--text-muted); opacity: 0; }
+.se-jl button:hover .se-jl-x { opacity: 1; }
+.se-jl-x:hover { color: var(--text-error); background: var(--background-modifier-hover); }
 .se-w { color: var(--text-faint); min-width: 120px; }
 .se-tags { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .se-tag { border-radius: 999px; padding: 1px 2px 1px 9px; font-size: var(--font-ui-smaller); border: 1.5px solid var(--c); display: inline-flex; align-items: center; gap: 2px; }
@@ -395,6 +402,11 @@ body.se-awaiting .se-name { cursor: copy; }
 .se-clip.is-cur { background: var(--c); color: #111; font-weight: 700; box-shadow: 0 0 0 2px var(--text-normal), 0 0 12px var(--c); z-index: 3; }
 .se-clip.is-flash { border-style: dashed; background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--c) 25%, var(--background-secondary)) 0 4px, var(--background-secondary) 4px 7px); }
 .se-clip.is-nopov { border-style: dotted; }
+/* Dragging scenes and events on the timeline */
+.se-clip.is-dragging, .se-ev.is-dragging { pointer-events: none; z-index: 5; opacity: 0.85; box-shadow: 0 4px 12px #0008; }
+.se-clip.is-drop-on { box-shadow: 0 0 0 2px var(--interactive-accent); z-index: 4; }
+.se-dropline { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--interactive-accent); border-radius: 1px; pointer-events: none; z-index: 4; }
+.is-moving, .is-moving * { cursor: grabbing !important; }
 .se-more { position: absolute; height: 14px; font-size: 10px; color: var(--text-muted); }
 .se-ev { position: absolute; width: 10px; height: 10px; transform: translate(-50%, 0) rotate(45deg); background: var(--se-ev); border-radius: 2px; cursor: pointer; top: 5px; }
 .se-ev:hover::after { content: attr(data-t); position: absolute; transform: rotate(-45deg); left: 12px; top: -14px; background: #000d; padding: 2px 6px; border-radius: 5px; font-size: 11px; white-space: nowrap; color: #fff; z-index: 9; }
@@ -734,7 +746,9 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 .se-look-ex { height: 26px !important; font-size: var(--font-ui-smaller) !important; }
 .se-style-modal, .se-export-modal { width: min(420px, 92vw); }
 .se-style-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0; }
-.se-style-row input:not([type=color]) { width: 220px; }
+.se-style-row input:not([type=color]):not([type=checkbox]) { width: 220px; }
+.se-style-row.se-check { justify-content: flex-start; gap: 8px; }
+.se-style-row input[type=checkbox] { width: var(--checkbox-size, 15px); height: var(--checkbox-size, 15px); flex: none; margin: 0; }
 .se-style-row input[type=color] { width: 44px; height: 28px; padding: 1px; }
 .se-style-acts { display: flex; justify-content: flex-end; margin-top: 12px; }
 .se-export-where { color: var(--text-muted); font-size: var(--font-ui-smaller); margin-top: 8px; }
@@ -766,3 +780,24 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 /* 2.14: the World button in each note's header (lit while the World view is open) */
 .se-world-btn.is-active { color: var(--interactive-accent) !important; background: var(--background-modifier-hover); }
 
+.se-check { display: flex; align-items: center; gap: 6px; margin: 10px 0 4px; }
+/* On a pale map (or the blank sheet) the light labels at the top need a dark backing, like the caption at the bottom. */
+.se-nav, .se-map .se-zoom-pct { background: #000a; padding: 2px 9px; border-radius: 11px; }
+.se-desc-edit { width: 100%; resize: vertical; font: inherit; margin: 2px 0 6px; }
+/* Obsidian lays every widget in the editor out as a full-width block from the left; the scene bar sits centred under the title instead. */
+.markdown-source-view .cm-content > .se-scenebar { display: flex !important; margin-left: auto !important; margin-right: auto !important; }
+/* The dead stay where they died: faded and grey, with a small cross, as a landmark. */
+.se-tok.is-dead { filter: grayscale(1) brightness(.8); opacity: .65; cursor: default; }
+.se-tok.is-dead .se-f { box-shadow: none; position: relative; }
+.se-tok.is-dead .se-n { opacity: 1; font-style: italic; }
+.se-dead-mark { position: absolute; top: -6px; right: -6px; width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1; background: #111; color: #ddd; border: 1px solid #555; }
+/* Broken links: a quiet warning in the header, and the box it opens */
+.se-broken { color: var(--text-warning) !important; border: 1px solid color-mix(in srgb, var(--text-warning) 50%, transparent) !important; }
+.se-broken-box { width: 330px; }
+.se-broken-box h4 { margin: 0 0 6px; }
+.se-broken-box ul { margin: 0 0 8px; padding-left: 18px; font-size: var(--font-ui-small); }
+.se-broken-box li.is-lost { color: var(--text-muted); }
+/* Drop cap switched off: the chapter's first paragraph is an ordinary opening paragraph. */
+.se-no-dropcap .manuscript .mm-dropcap::first-letter, .se-no-dropcap.manuscript .mm-dropcap::first-letter { float: none; font-family: inherit; font-size: inherit; font-style: inherit; font-weight: inherit; line-height: inherit; margin: 0; color: inherit; }
+.se-look-check { display: flex; align-items: center; gap: 6px; }
+.se-look-f.is-off { opacity: .45; }

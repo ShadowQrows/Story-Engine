@@ -84,11 +84,14 @@ export function gapBefore(kinds: LineKind[], i: number) { let n = 0; for (let k 
  */
 export function toLinePerParagraph(text: string): string {
   const lines = text.split('\n'), kinds = classify(lines), out: string[] = [];
+  // Empty lines inside code blocks are part of the code; next to lists, tables, quotes or code, Markdown needs them.
+  const empty = (i: number) => !lines[i].trim() && kinds[i] !== 'other' && kinds[i] !== 'frontmatter';
+  const needsGap = (i: number) => i >= 0 && i < lines.length && kinds[i] === 'other' && !/^\s*%%/.test(lines[i]);
   let i = 0;
   while (i < lines.length) {
-    if (kinds[i] === 'frontmatter' || lines[i].trim()) { out.push(lines[i]); i++; continue; }
-    let j = i; while (j < lines.length && !lines[j].trim()) j++;
-    const between = out.length > 0 && j < lines.length;
+    if (!empty(i)) { out.push(lines[i]); i++; continue; }
+    let j = i; while (j < lines.length && empty(j)) j++;
+    const between = out.length > 0 && j < lines.length && !needsGap(i - 1) && !needsGap(j);
     for (let k = between ? i + 1 : i; k < j; k++) out.push('');
     i = j;
   }

@@ -102,8 +102,16 @@ function fill(bar: HTMLElement, project: Project) {
   num(book, 'Paragraph gap', 'paraSpace', 0.1, 0, 3, 'em');
   num(book, 'Indent', 'indent', 0.05, 0, 2, 'in');
   num(book, 'Title size', 'titleSize', 0.1, 0.8, 5, 'em');
-  font(book, 'Drop cap', 'dropcapFont', DROPCAP_FONTS);
-  num(book, 'Drop cap size', 'dropcapSize', 0.1, 1, 8, 'em');
+  // Drop cap: on or off for the whole story; its font and size only matter when it's on.
+  const dcw = book.createEl('label', { cls: 'se-look-f se-look-check' });
+  const dc = dcw.createEl('input'); dc.type = 'checkbox'; dc.checked = l.dropcap; dcw.createSpan({ text: 'Drop cap' });
+  const before = book.childElementCount;
+  font(book, 'Font', 'dropcapFont', DROPCAP_FONTS);
+  num(book, 'Size', 'dropcapSize', 0.1, 1, 8, 'em');
+  const dcRows = Array.from(book.children).slice(before) as HTMLElement[];
+  const showDc = (on: boolean) => dcRows.forEach(r => { r.toggleClass('is-off', !on); r.querySelectorAll('input').forEach(i => { i.disabled = !on; }); });
+  showDc(l.dropcap);
+  dc.onchange = () => { set({ dropcap: dc.checked }); showDc(dc.checked); };
   const scr = group('Screen only', 'Only how it looks while you write.');
   num(scr, 'Page width', 'pageWidth', 1, 20, 120, 'em');
   const za = (bar as any).__actions as LookActions | undefined;
@@ -147,7 +155,7 @@ function fill(bar: HTMLElement, project: Project) {
     };
     space('spaceBefore', '↑'); space('spaceAfter', '↓');
     const del = row.createEl('button', { cls: 'se-look-reset se-look-sdel', text: 'Delete' });
-    del.onclick = () => { if (!del.hasClass('is-sure')) { del.addClass('is-sure'); del.setText('Sure?'); return; } set({ styles: l.styles.filter(x => x.id !== st.id) }); fill(bar, project); };
+    del.onclick = () => { if (!del.hasClass('is-sure')) { del.addClass('is-sure'); del.setText('Confirm'); window.setTimeout(() => { if (del.isConnected) { del.removeClass('is-sure'); del.setText('Delete'); } }, 4000); return; } set({ styles: l.styles.filter(x => x.id !== st.id) }); fill(bar, project); };
   }
   if (l.styles.length) { const k = sg.createDiv('se-look-skey'); k.setText('Name · writing colour · paper colour · italic · alignment · size · lines of space before ↑ and after ↓'); }
   const actions = (bar as any).__actions as LookActions | undefined;
@@ -159,6 +167,8 @@ function fill(bar: HTMLElement, project: Project) {
     ex.createEl('button', { cls: 'se-look-ex', text: 'Copy chapter for web' }).onclick = () => actions.copyForWeb((bar as any).__view);
   }
   const acts = panel.createDiv('se-look-acts');
-  const reset = acts.createEl('button', { text: 'Reset all' }); reset.onclick = () => { const { styles: _s, paper: _p, paperBg: _b, paperText: _t, ...type } = M.DEFAULT_LOOK; set(type); fill(bar, project); };   // typography only: styles and paper stay
+  const reset = acts.createEl('button', { text: 'Reset all' }); reset.onclick = () => {
+    // A second click within a few seconds: the font, sizes and spacing go back to the defaults (styles and colours stay).
+    if (!reset.hasClass('is-sure')) { reset.addClass('is-sure'); reset.setText('Confirm'); window.setTimeout(() => { if (reset.isConnected) { reset.removeClass('is-sure'); reset.setText('Reset all'); } }, 4000); return; } const { styles: _s, paper: _p, paperBg: _b, paperText: _t, ...type } = M.DEFAULT_LOOK; set(type); fill(bar, project); };   // typography only: styles and paper stay
   const close = acts.createEl('button', { text: 'Done' }); close.onclick = () => { bar.removeClass('is-open'); fill(bar, project); bar.closest('.workspace-leaf-content, .view-content-wrap')?.querySelector('.se-look-aa')?.removeClass('is-active'); };
 }
