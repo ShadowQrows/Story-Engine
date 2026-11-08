@@ -1,4 +1,4 @@
-# Story Engine 2.18
+# Story Engine
 
 Write your chapters in Obsidian with a book layout, and build your world from them: highlight a name, and it becomes a piece on your map and timeline. Fully offline.
 
