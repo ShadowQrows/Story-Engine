@@ -61,17 +61,17 @@ export interface BookLook {
   paper: boolean; paperBg: string; paperText: string;
   styles: ParaStyle[];
 }
-export const DEFAULT_LOOK: BookLook = { font: 'Libre Baskerville', size: 17, lineHeight: 1.5, paraSpace: 0, indent: 0.5, titleSize: 1.8, dropcapFont: 'Old English Text MT', dropcapSize: 3.9, dropcap: true, pageWidth: 44, color: '', paper: false, paperBg: '#f3ecdc', paperText: '#231f1a', styles: [] };
+export const DEFAULT_LOOK: BookLook = { font: 'Libre Baskerville', size: 11, lineHeight: 1.2, paraSpace: 0, indent: 0.5, titleSize: 2, dropcapFont: 'Old English Text MT', dropcapSize: 6, dropcap: true, pageWidth: 45, color: '', paper: false, paperBg: '#f3ecdc', paperText: '#323232', styles: [] };
 /** Book details for exports. */
-export interface BookInfo { title: string; author: string; language: string; pageSize?: string; /** PDF: wider margin on the binding side, alternating left/right (for a printed book) */ mirror?: boolean }
+export interface BookInfo { title: string; author: string; language: string; pageSize?: string; /** PDF: wider margin on the binding side, alternating left/right (for a printed book) */ mirror?: boolean; /** pictures inside chapters go into the book (on unless turned off) */ images?: boolean }
 /** Page sizes for the PDF and Word exports (inches), with margins that suit them. */
 export const PAGE_SIZES: Record<string, { label: string; w: number; h: number; top: number; bottom: number; inner: number; outer: number }> = {
-  '6x9': { label: '6 × 9 in (trade paperback)', w: 6, h: 9, top: 0.75, bottom: 0.8, inner: 0.8, outer: 0.6 },
+  '6x9': { label: '6 × 9 in, Trade Paperback', w: 6, h: 9, top: 0.75, bottom: 0.8, inner: 0.8, outer: 0.6 },
   '5.5x8.5': { label: '5.5 × 8.5 in', w: 5.5, h: 8.5, top: 0.7, bottom: 0.75, inner: 0.75, outer: 0.55 },
   '5x8': { label: '5 × 8 in', w: 5, h: 8, top: 0.65, bottom: 0.7, inner: 0.7, outer: 0.5 },
   'A5': { label: 'A5', w: 5.83, h: 8.27, top: 0.7, bottom: 0.75, inner: 0.75, outer: 0.55 },
-  'Letter': { label: 'US Letter (manuscript)', w: 8.5, h: 11, top: 1, bottom: 1, inner: 1, outer: 1 },
-  'A4': { label: 'A4 (manuscript)', w: 8.27, h: 11.69, top: 1, bottom: 1, inner: 1, outer: 1 },
+  'Letter': { label: 'US Letter, Manuscript', w: 8.5, h: 11, top: 1, bottom: 1, inner: 1, outer: 1 },
+  'A4': { label: 'A4, Manuscript', w: 8.27, h: 11.69, top: 1, bottom: 1, inner: 1, outer: 1 },
 };
 export const pageOf = (id?: string) => PAGE_SIZES[id ?? ''] ?? PAGE_SIZES['6x9'];
 const HEX = /^#[0-9a-f]{6}$/i;
@@ -166,7 +166,7 @@ export function normalizeData(raw: unknown): ProjectData {
   if (Array.isArray(r.styles) && r.styles.length) d.styles = r.styles.filter((s: any) => s && s.id && s.label);
   // “Member of” is built in since 2.7 (it groups faction members): add it to older stories that don't have it.
   if (!d.styles.some(s => isMembership(s.label))) d.styles.push({ ...DEFAULT_STYLES.find(s => s.id === 'member')! });
-  if (r.book && typeof r.book === 'object') { const bk: Partial<BookInfo> = {}; for (const k of ['title', 'author', 'language', 'pageSize'] as const) if (typeof r.book[k] === 'string') bk[k] = r.book[k]; if (r.book.mirror === true) bk.mirror = true; d.book = bk; }
+  if (r.book && typeof r.book === 'object') { const bk: Partial<BookInfo> = {}; for (const k of ['title', 'author', 'language', 'pageSize'] as const) if (typeof r.book[k] === 'string') bk[k] = r.book[k]; if (r.book.mirror === true) bk.mirror = true; if (r.book.images === false) bk.images = false; d.book = bk; }
   if (r.words && typeof r.words === 'object') { const w: Partial<Words> = {}; for (const k of ['scene', 'scenes', 'moment', 'moments'] as const) if (typeof r.words[k] === 'string' && r.words[k].trim()) w[k] = r.words[k].trim(); if (Object.keys(w).length) d.words = w; }
   if (r.themes && typeof r.themes === 'object') for (const [k, v] of Object.entries(r.themes)) d.themes[k] = typeof v === 'string' ? { color: v, meaning: '' } : { color: String((v as any)?.color ?? '#fff'), meaning: String((v as any)?.meaning ?? '') };
   if (r.places && typeof r.places === 'object') for (const [k, v] of Object.entries(r.places as Record<string, any>)) if (v && Number.isFinite(v.x) && Number.isFinite(v.y)) d.places[k] = { x: clamp01(v.x), y: clamp01(v.y), ...(typeof v.map === 'string' && v.map !== MAIN_MAP ? { map: v.map } : {}) };
@@ -182,9 +182,9 @@ export function normalizeData(raw: unknown): ProjectData {
   if (r.look && typeof r.look === 'object') {
     const l = r.look;
     d.look = {
-      font: typeof l.font === 'string' && l.font.trim() ? l.font : DEFAULT_LOOK.font, size: num(l.size, DEFAULT_LOOK.size, 10, 40), lineHeight: num(l.lineHeight, DEFAULT_LOOK.lineHeight, 1, 3),
-      paraSpace: num(l.paraSpace, 0, 0, 3), indent: num(l.indent, 0.5, 0, 2), titleSize: num(l.titleSize, 1.8, 1, 4), dropcapFont: typeof l.dropcapFont === 'string' ? l.dropcapFont : DEFAULT_LOOK.dropcapFont,
-      dropcapSize: num(l.dropcapSize, 3.9, 0, 8), dropcap: l.dropcap !== false, pageWidth: num(l.pageWidth, 44, 20, 120), color: typeof l.color === 'string' ? l.color : '',
+      font: typeof l.font === 'string' && l.font.trim() ? l.font : DEFAULT_LOOK.font, size: num(l.size, DEFAULT_LOOK.size, 8, 40), lineHeight: num(l.lineHeight, DEFAULT_LOOK.lineHeight, 1, 3),
+      paraSpace: num(l.paraSpace, 0, 0, 3), indent: num(l.indent, DEFAULT_LOOK.indent, 0, 2), titleSize: num(l.titleSize, DEFAULT_LOOK.titleSize, 1, 4), dropcapFont: typeof l.dropcapFont === 'string' ? l.dropcapFont : DEFAULT_LOOK.dropcapFont,
+      dropcapSize: num(l.dropcapSize, DEFAULT_LOOK.dropcapSize, 0, 8), dropcap: l.dropcap !== false, pageWidth: num(l.pageWidth, DEFAULT_LOOK.pageWidth, 20, 120), color: typeof l.color === 'string' ? l.color : DEFAULT_LOOK.color,
       paper: !!l.paper, paperBg: HEX.test(l.paperBg) ? l.paperBg : DEFAULT_LOOK.paperBg, paperText: HEX.test(l.paperText) ? l.paperText : DEFAULT_LOOK.paperText,
       styles: readStyles(l.styles),
     };

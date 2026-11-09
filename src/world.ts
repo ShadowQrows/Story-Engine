@@ -22,7 +22,7 @@ const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp', 'a
 const POV_COLORS = ['#f2c94c', '#6ea2f0', '#ff7a8a', '#5fd4a2', '#c792ea', '#ff9f43', '#4dd0e1', '#e57373', '#aed581', '#f48fb1', '#90caf9', '#ffd180'];
 /** The right-hand column never gets narrower than this (narrower, its rows would spill sideways). */
 const SIDE_MIN = 380;
-const LEFT = 120, GAP = 34, ROWS = 3, ROW_H = 20;
+const LEFT = 8, GAP = 34, RULER_H = 20, SCENE_MIN_H = 30, DATE_HEAD = 24;
 /** Drawn width of a time skip's break (you can drag it wider; it's only how the timeline looks). */
 const gapOf = (m: M.Moment) => m.gap ?? GAP;
 /** Make a connection read as a phrase: “Sibling” → “sibling of”, “Serves” stays “serves”. */
@@ -65,7 +65,6 @@ const HELP_HTML = `<h4>Controls</h4><ul>
       <li><b>Dragging on the timeline:</b> a scene onto another: same time · a scene into a gap: its chapter moves there · an event to another scene · a moment, or its edges, to change when it starts and ends.</li>
       <li><b>Cards:</b> double-click a typed description or a connection to change it.</li>
       <li><b>Caption:</b> double-click it to focus on the POV.</li></ul>`;
-const SECTION_LABEL: Record<string, string> = { scenes: 'Scenes (numbered in reading order)', events: 'Events', storylines: 'Story lines' };
 
 interface Member { piece: M.Piece; exact?: { x: number; y: number }; dead?: boolean }
 interface Group { key: string; x: number; y: number; place?: string; projected?: boolean; members: Member[] }
@@ -82,10 +81,14 @@ type Drag =
 
 export class WorldView extends ItemView {
   private sel = new Set<string>();
+  /** Characters picked to see on the timeline: the scenes they're in light up, the ones where they're all together most. */
+  private focus = new Set<string>();
   card: string | null = null;
   private query = '';
   private zoom = 1; private tx = 0; private ty = 0; private SW = 1000; private SH = 1000; private lastMapW = 0; private mapKey = '';
   private px = 0;
+  /** The timeline fits the pane (and refits as it's resized) until you zoom it yourself. */
+  private pxFit = true;
   private placing = false;
   private putting: string | null = null;
   /** Pieces drawn where they died (faded): they can't be moved, only looked at. */
@@ -109,7 +112,7 @@ export class WorldView extends ItemView {
     head: HTMLElement; upper: HTMLElement; mapcol: HTMLElement; map: HTMLElement; stage: HTMLElement; img: HTMLImageElement; blank: HTMLElement; areas: SVGSVGElement; lines: SVGSVGElement; trail: SVGSVGElement;
     hud: HTMLElement; zoomPct: HTMLElement; piecesBtn: HTMLButtonElement; legendBtn: HTMLButtonElement; crumbs: HTMLElement; placeBtn: HTMLButtonElement; linesBtn: HTMLButtonElement; banner: HTMLElement; tag: HTMLElement; legend: HTMLElement; offmap: HTMLElement;
     splitV: HTMLElement; side: HTMLElement; tabs: HTMLElement; q: HTMLInputElement; pieces: HTMLElement; catPanel: HTMLElement; cat: HTMLElement; splitH: HTMLElement; cardPanel: HTMLElement; cardEl: HTMLElement; setup: HTMLElement;
-    splitDock: HTMLElement; dock: HTMLElement; bar: HTMLElement; followMap: HTMLButtonElement; followCur: HTMLButtonElement; ov: HTMLElement; ovc: HTMLCanvasElement; ovWin: HTMLElement; ovHead: HTMLElement; wrap: HTMLElement; tlEl: HTMLElement; help: HTMLElement;
+    splitDock: HTMLElement; dock: HTMLElement; bar: HTMLElement; followMap: HTMLButtonElement; followCur: HTMLButtonElement; focusBar: HTMLElement; ov: HTMLElement; ovc: HTMLCanvasElement; ovWin: HTMLElement; ovHead: HTMLElement; wrap: HTMLElement; tlEl: HTMLElement; help: HTMLElement;
   };
 
   constructor(leaf: WorkspaceLeaf, private plugin: StoryEnginePlugin) { super(leaf); }
@@ -166,7 +169,7 @@ export class WorldView extends ItemView {
     const pieces = side.createDiv('se-pane se-pieces');
     const catPanel = pieces.createDiv('se-panel se-catalog');
     const ph = catPanel.createDiv('se-ph');
-    const q = ph.createEl('input', { cls: 'se-q' }); q.placeholder = 'Search'; 
+    const q = ph.createEl('input', { cls: 'se-q' }); q.type = 'text'; q.placeholder = 'Search'; 
     q.oninput = () => { this.query = q.value.trim().toLowerCase(); const p = this.project; if (p) this.renderCatalog(p); };
     const cat = catPanel.createDiv('se-scroll');
     // “+ New”: a piece that isn't named in the text yet. Top right of the catalog, on its own (not part of a section).
@@ -178,20 +181,17 @@ export class WorldView extends ItemView {
     const setup = side.createDiv('se-pane se-setup se-scroll');
     const splitDock = c.createDiv('se-split-dock'); 
     const dock = c.createDiv('se-dock');
-    const bar = dock.createDiv('se-bar');
-    // The “Scene” and “Moment” labels are your words for them: click one to rename it everywhere.
-    const grp = (key: 'scene' | 'moment') => { const g = bar.createDiv('se-grp'); const i = g.createEl('button', { cls: 'se-lbl se-word' }); i.dataset.word = key; i.onclick = () => this.wordBox(i, key); return g; };
-    const sg = grp('scene'), mg = grp('moment');
-    const db = (g: HTMLElement, text: string, title: string, fn: () => void) => { const b = g.createEl('button', { cls: 'se-hb is-icon', text }); b.dataset.step = title; b.onclick = fn; return b; };
-    db(sg, '⏴', 'prev', () => this.stepScene(-1)); db(sg, '⏵', 'next', () => this.stepScene(1));
-    db(mg, '⏮', 'prev-moment', () => this.stepMoment(-1)); db(mg, '⏭', 'next-moment', () => this.stepMoment(1));
-    const ov = dock.createDiv('se-overview'); 
-    const ovc = ov.createEl('canvas'); const ovWin = ov.createDiv('se-ov-window'); const ovHead = ov.createDiv('se-ov-head');
-    const wrap = dock.createDiv('se-tlwrap');
+    // The toolbar column: what the timeline shows (filled in by renderTools); the timeline beside it.
+    const bar = dock.createDiv('se-tools');
+    const tlmain = dock.createDiv('se-tlmain');
+    const focusBar = tlmain.createDiv('se-focusbar');
+    const wrap = tlmain.createDiv('se-tlwrap');
     const tlEl = wrap.createDiv('se-tlc');
+    const ov = tlmain.createDiv('se-overview');
+    const ovc = ov.createEl('canvas'); const ovWin = ov.createDiv('se-ov-window'); const ovHead = ov.createDiv('se-ov-head');
     const help = c.createDiv('se-help'); help.hidden = true;
 
-    this.r = { head, upper, mapcol, map, stage, img, blank, areas, lines, trail, hud, zoomPct, piecesBtn, legendBtn, crumbs, placeBtn, linesBtn, banner, tag, legend, offmap, splitV, side, tabs, q, pieces, catPanel, cat, splitH, cardPanel, cardEl, setup, splitDock, dock, bar, followMap, followCur, ov, ovc, ovWin, ovHead, wrap, tlEl, help };
+    this.r = { head, upper, mapcol, map, stage, img, blank, areas, lines, trail, hud, zoomPct, piecesBtn, legendBtn, crumbs, placeBtn, linesBtn, banner, tag, legend, offmap, splitV, side, tabs, q, pieces, catPanel, cat, splitH, cardPanel, cardEl, setup, splitDock, dock, bar, focusBar, followMap, followCur, ov, ovc, ovWin, ovHead, wrap, tlEl, help };
     img.onload = () => { const w = img.naturalWidth || 1, h = img.naturalHeight || 1; this.SW = w >= h ? 1000 : 1000 * w / h; this.SH = w >= h ? 1000 * h / w : 1000; this.noteAspect(w / h); this.layoutStage(); this.restoreOrFit(); void this.render(); };
 
     // The same map button as in the notes' headers: here it closes the World view.
@@ -199,7 +199,7 @@ export class WorldView extends ItemView {
     this.plugin.applyLooksSoon();   // light up the World buttons in the notes' headers
     this.wireMap(); this.wireTimeline(); this.wirePanels();
     this.registerDomEvent(document, 'keydown', e => this.onKey(e));
-    this.registerDomEvent(document, 'pointerdown', e => { const b = this.contentEl.querySelector('.se-momentbox'); if (b && !b.contains(e.target as Node) && !(e.target as HTMLElement).closest('.se-band')) b.remove(); }, { capture: true });
+    this.registerDomEvent(document, 'pointerdown', e => { const b = this.contentEl.querySelector('.se-momentbox'); if (b && !b.contains(e.target as Node) && !(e.target as HTMLElement).closest('.se-date-name, .se-broken')) b.remove(); }, { capture: true });
     c.addEventListener('pointerenter', () => { this.overView = true; }); c.addEventListener('pointerleave', () => { this.overView = false; });
     this.registerDomEvent(document, 'keyup', e => { if (e.code === 'Space') { this.space = false; map.removeClass('is-space'); } });
     this.registerEvent(this.plugin.events.on('changed', () => this.renderSoon()));
@@ -212,18 +212,19 @@ export class WorldView extends ItemView {
   private toggleHelp() {
     const h = this.r.help; h.hidden = !h.hidden; if (h.hidden) return;
     h.innerHTML = M.say(Object.fromEntries(Object.entries(this.words).map(([k, v]) => [k, esc(v)])) as unknown as M.Words, HELP_HTML);   // your words for “scene”/“moment”, escaped
-    h.createEl('button', { cls: 'se-hb', text: 'Got it' }).onclick = () => { h.hidden = true; };
+    h.createEl('button', { cls: 'se-hb', text: 'Got It' }).onclick = () => { h.hidden = true; };
   }
   /** Rename “scene” or “moment” everywhere: a small box right under the label (one · more than one · reset). */
   private wordBox(anchor: HTMLElement, key: 'scene' | 'moment') {
     const p = this.project; if (!p) return;
-    this.contentEl.querySelector('.se-wordbox')?.remove();
+    const old = this.contentEl.querySelector('.se-wordbox') as (HTMLElement & { __close?: () => void; __key?: string }) | null;
+    if (old) { old.__close?.(); if (old.__key === key) return; }
     const many = key === 'scene' ? 'scenes' : 'moments', w = this.words;
     const box = this.contentEl.createDiv('se-wordbox');
     const r = anchor.getBoundingClientRect(), host = this.contentEl.getBoundingClientRect();
     box.style.left = `${r.left - host.left}px`; box.style.top = `${r.bottom - host.top + 4}px`;
-    const one = box.createEl('input', { cls: 'se-wb-one' }); one.value = w[key]; 
-    const pl = box.createEl('input', { cls: 'se-wb-many' }); pl.value = w[many]; 
+    const one = box.createEl('input', { cls: 'se-wb-one' }); one.type = 'text'; one.value = w[key]; 
+    const pl = box.createEl('input', { cls: 'se-wb-many' }); pl.type = 'text'; pl.value = w[many]; 
     const rs = box.createEl('button', { cls: 'se-x', text: '↺' }); 
     let plTouched = false;
     pl.oninput = () => { plTouched = true; };
@@ -237,8 +238,9 @@ export class WorldView extends ItemView {
       p.data.words = nw; p.saveSoon();
     };
     const close = (keep: boolean) => { if (keep) save(); box.remove(); document.removeEventListener('pointerdown', outside, true); };
-    const outside = (e: PointerEvent) => { if (!box.contains(e.target as Node)) close(true); };
+    const outside = (e: PointerEvent) => { if (!box.contains(e.target as Node) && !anchor.contains(e.target as Node)) close(true); };
     document.addEventListener('pointerdown', outside, true);
+    Object.assign(box, { __close: () => close(true), __key: key });
     for (const i of [one, pl]) i.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); close(true); } if (e.key === 'Escape') { e.preventDefault(); close(false); } };
     rs.onclick = () => { one.value = M.DEFAULT_WORDS[key]; pl.value = M.DEFAULT_WORDS[many]; close(true); };
     one.focus(); one.select();
@@ -300,11 +302,12 @@ export class WorldView extends ItemView {
     tip(btn, 'Some map spots or scenes lost what they belonged to. Click to see and reconnect them.');
     this.r.head.querySelector('.se-spacer')?.before(btn);
     btn.onclick = () => {
-      this.contentEl.querySelector('.se-broken-box')?.remove();
+      const old = this.contentEl.querySelector('.se-broken-box');
+      if (old) { old.remove(); return; }
       const box = this.contentEl.createDiv('se-momentbox se-broken-box');
       const r = btn.getBoundingClientRect(), c = this.contentEl.getBoundingClientRect();
       box.style.left = `${Math.max(8, Math.min(r.left - c.left, c.width - 340))}px`; box.style.top = `${r.bottom - c.top + 6}px`;
-      box.createEl('h4', { text: 'Broken links' });
+      box.createEl('h4', { text: 'Broken Links' });
       const list = box.createEl('ul');
       const sc = this.words.scene.toLowerCase();
       for (const x of b.pieces) {
@@ -317,7 +320,7 @@ export class WorldView extends ItemView {
         list.createEl('li', { text: `${x.label ? x.label.replace(/^\d{1,3}\s+/, '') : `A ${sc}`}: ${x.uses} spot${x.uses > 1 ? 's' : ''} · ${t ? `reconnects to ${sc} ${t.order}` : 'not found'}`, cls: t ? '' : 'is-lost' });
       }
       const acts = box.createDiv('se-acts');
-      if (n > fixable) { const clr = acts.createEl('button', { cls: 'se-hb se-ghost se-left', text: 'Clear the rest' }); tip(clr, 'Forget the links nothing matches. Ctrl+Z brings them back.'); clr.onclick = () => { box.remove(); void p.forgetBroken(b); }; }
+      if (n > fixable) { const clr = acts.createEl('button', { cls: 'se-hb se-ghost se-left', text: 'Clear the Rest' }); tip(clr, 'Forget the links nothing matches. Ctrl+Z brings them back.'); clr.onclick = () => { box.remove(); void p.forgetBroken(b); }; }
       acts.createEl('button', { cls: 'se-hb', text: 'Close' }).onclick = () => box.remove();
       if (fixable) acts.createEl('button', { cls: 'se-hb mod-cta', text: 'Reconnect' }).onclick = () => { box.remove(); void p.reconnect(b).then(k => new Notice(`Reconnected ${k} link${k === 1 ? '' : 's'}.`)); };
     };
@@ -325,7 +328,7 @@ export class WorldView extends ItemView {
   private emptyState() {
     const e = el('div', 'se-empty-state');
     e.append(el('h3', '', 'No story yet'), el('p', '', 'A story is a folder with your chapter notes. Story Engine adds a World folder (one note per piece) and a story-engine.json file next to them.'));
-    const b = el('button', 'mod-cta', 'Set up a story…'); b.onclick = () => this.plugin.newStory();
+    const b = el('button', 'mod-cta', 'Set Up a Story…'); b.onclick = () => this.plugin.newStory();
     e.append(b);
     return e;
   }
@@ -335,8 +338,8 @@ export class WorldView extends ItemView {
     const pick = h.createEl('select', { cls: 'dropdown se-story-pick' });
     
     for (const pr of this.plugin.projects.values()) { const o = pick.createEl('option', { text: pr.name }); o.value = pr.folder; if (pr === p) o.selected = true; }
-    const add = pick.createEl('option', { text: 'New story…' }); add.value = '__new';
-    if (!p) { const o = pick.createEl('option', { text: 'No story' }); o.value = ''; o.selected = true; }
+    const add = pick.createEl('option', { text: 'New Story…' }); add.value = '__new';
+    if (!p) { const o = pick.createEl('option', { text: 'No Story' }); o.value = ''; o.selected = true; }
     pick.onchange = () => {
       if (pick.value === '__new') { this.plugin.newStory(); void this.render(); return; }
       this.plugin.setActive(pick.value);
@@ -364,7 +367,7 @@ export class WorldView extends ItemView {
     this.r.catPanel.style.flex = `1 1 ${ui.split * 100}%`; this.r.cardPanel.style.flex = `1 1 ${(1 - ui.split) * 100}%`;
     this.r.pieces.toggle(ui.tab === 'pieces'); this.r.setup.toggle(ui.tab === 'setup');
     const w = M.wordsOf(p.data);
-    this.r.bar.querySelectorAll<HTMLElement>('.se-word').forEach(i => { i.textContent = w[i.dataset.word as 'scene' | 'moment']; });
+    this.renderTools(p); void w;
     this.r.tabs.empty();
     for (const [k, label] of [['pieces', 'Pieces'], ['setup', 'Setup']] as const) {
       const b = this.r.tabs.createEl('button', { cls: `se-tab ${ui.tab === k ? 'is-on' : ''}`, text: label });
@@ -377,7 +380,7 @@ export class WorldView extends ItemView {
   private setTab(tab: 'pieces' | 'setup') { const p = this.project; if (!p) return; p.data.ui.tab = tab; p.saveQuiet(); this.applyUi(p); if (tab === 'setup') this.renderSetup(p); }
   private setSideOpen(open: boolean, redraw = true) { const p = this.project; if (!p || p.data.ui.sideOpen === open) return; p.data.ui.sideOpen = open; p.saveQuiet(); this.renderHead(p); if (redraw) this.applyUi(p); }
   /** The smallest timeline: the arrows, the strip, and the ruler with the moments and time skips. */
-  private minDock() { return (this.r.bar.offsetHeight || 34) + (this.r.ov.offsetHeight || 13) + 7 + 36 + 4; }
+  private minDock() { return RULER_H + (this.r.ov.offsetHeight ? this.r.ov.offsetHeight + 8 : 0) + 6; }
   private setDock(h: number) {
     const p = this.project; if (!p) return;
     const total = this.contentEl.clientHeight;
@@ -566,10 +569,10 @@ export class WorldView extends ItemView {
       if ((p.data.ui.blankOk ?? []).includes(mapId)) return;
       const b = this.r.map.createDiv('se-blank-hint');
       b.createEl('h4', { text: mapId === M.MAIN_MAP ? 'No map yet' : `No picture for ${p.mapName(mapId)} yet` });
-      b.createDiv({ cls: 'se-small', text: 'Any picture works: a drawing, a scan, a sketch.' });
       const acts = b.createDiv('se-acts');
-      acts.createEl('button', { cls: 'mod-cta', text: 'Choose image…' }).onclick = () => this.pickMap(p, mapId);
-      acts.createEl('button', { text: 'Use blank sheet' }).onclick = () => { p.data.ui.blankOk = [...new Set([...(p.data.ui.blankOk ?? []), mapId])]; p.saveQuiet(); b.remove(); };
+      const choose = acts.createEl('button', { cls: 'mod-cta', text: 'Choose Image…' }); choose.onclick = () => this.pickMap(p, mapId);
+      tip(choose, 'Any picture works: a drawing, a scan, a sketch.');
+      acts.createEl('button', { text: 'Use Blank Sheet' }).onclick = () => { p.data.ui.blankOk = [...new Set([...(p.data.ui.blankOk ?? []), mapId])]; p.saveQuiet(); b.remove(); };
     }
   }
   private pickMap(p: Project, mapId = M.MAIN_MAP) {
@@ -789,7 +792,7 @@ export class WorldView extends ItemView {
       const btn = (t: string, fn: () => void, cls = '') => { const b = acts.createEl('button', { cls: `se-hb ${cls}`, text: t }); b.onclick = ev => { ev.stopPropagation(); fn(); }; };
       if (ed.mode === 'edit' || ed.pts.length >= 3) btn('Done', () => this.finishEdit(true), 'is-on');
       btn('Cancel', () => this.finishEdit(false));
-      if (ed.kind === 'area') btn('Reset to a circle', () => { p.checkpoint(); p.setArea(ed.pid, null); this.edit = null; this.renderMap(p); });
+      if (ed.kind === 'area') btn('Reset to a Circle', () => { p.checkpoint(); p.setArea(ed.pid, null); this.edit = null; this.renderMap(p); });
       return;
     }
     if (this.putting) off.appendText(`Click the map to put ${p.get(this.putting)?.name ?? 'it'} there · Esc to cancel`);
@@ -1000,6 +1003,15 @@ export class WorldView extends ItemView {
           for (const o of d.nodes) { o.n.style.left = `calc(${o.left} + ${dx}px)`; o.n.style.top = `calc(${o.top} + ${dy}px)`; }
           const p = this.project, h = p ? M.placeAt(p.data, this.mapId, f(), p.isPlaceId, d.id) : null;
           if (h !== this.hoverPlace || this.areasAll) { this.hoverPlace = h; this.renderAreas(); }
+          // Pieces (not places) held over a building with an inside map: it opens, to drop them inside.
+          if (!this.dragPlaces.size) {
+            const at = this.peekPoint(e.clientX, e.clientY);
+            if (this.peek) { this.peek.mark.toggle(!!at); if (at) { this.peek.mark.style.left = `${at.x * 100}%`; this.peek.mark.style.top = `${at.y * 100}%`; } }
+            const near = !!this.peek && (h === this.peek.map.anchor || this.peek.el.contains(e.target as Node) || this.nearPeek(e.clientX, e.clientY));
+            if (at || near) { if (this.peekClose !== null) { window.clearTimeout(this.peekClose); this.peekClose = null; } }
+            else if (this.peek && this.peekClose === null) this.peekClose = window.setTimeout(() => { this.peekClose = null; this.closePeek(); }, 500);
+            if (!at && !near) this.armPeek(h, e.clientX, e.clientY);
+          }
         }
         return;
       }
@@ -1030,11 +1042,11 @@ export class WorldView extends ItemView {
         // A character, item or event on the map.
         const cur = p.current(this.tl), sc = this.words.scene.toLowerCase();
         m.createDiv({ cls: 'se-ctx-h', text: hitPiece.name });
-        item('Show card', () => { this.card = hitPiece.id; this.sel = new Set([hitPiece.id]); void this.render(); });
+        item('Show Card', () => { this.card = hitPiece.id; this.sel = new Set([hitPiece.id]); void this.render(); });
         item('Rename…', () => this.rename(p, hitPiece));
         m.createEl('hr');
-        if (cur && p.behaviour(hitPiece) === 'token' && p.where(hitPiece)) item('Gone from here', () => { p.checkpoint({ what: `marking ${hitPiece.name} gone` }); void p.markGone(hitPiece, cur); }, `Off the map from ${sc} ${cur.order} on`);
-        item('Remove from map', () => p.takeOffMap(hitPiece), 'Takes away every stop on its journey');
+        if (cur && p.behaviour(hitPiece) === 'token' && p.where(hitPiece)) item('Gone From Here', () => { p.checkpoint({ what: `marking ${hitPiece.name} gone` }); void p.markGone(hitPiece, cur); }, `Off the map from ${sc} ${cur.order} on`);
+        item('Remove From Map', () => p.takeOffMap(hitPiece), 'Takes away every stop on its journey');
         return;
       }
       const pl = pid ? p.get(pid) : undefined;
@@ -1042,29 +1054,29 @@ export class WorldView extends ItemView {
         // A place: its name and icon, its shape (area, roof, inside map), then taking it off the map.
         m.createDiv({ cls: 'se-ctx-h', text: pl.name });
         item('Rename…', () => this.rename(p, pl));
-        item(p.data.icons[pl.id] ? 'Change icon…' : 'Choose icon…', () => this.pickIcon(p, pl.id));
+        item(p.data.icons[pl.id] ? 'Change Icon…' : 'Choose Icon…', () => this.pickIcon(p, pl.id));
         m.createEl('hr');
-        item('Edit area', () => this.startEdit('area', pl.id, 'edit'), 'Drag its points to reshape it');
-        item('Redraw area', () => this.startEdit('area', pl.id, 'draw'), 'Click around its border to draw a new outline');
-        if (p.data.areas[pl.id]) item('Reset area', () => { p.checkpoint(); p.setArea(pl.id, null); }, 'Back to a plain circle');
+        item('Edit Area', () => this.startEdit('area', pl.id, 'edit'), 'Drag its points to reshape it');
+        item('Redraw Area', () => this.startEdit('area', pl.id, 'draw'), 'Click around its border to draw a new outline');
+        if (p.data.areas[pl.id]) item('Reset Area', () => { p.checkpoint(); p.setArea(pl.id, null); }, 'Back to a plain circle');
         const inside = p.insideMapOf(pl.id);
-        if (inside) item('Open inside map', () => this.openMap(inside.id));
-        else item('Add inside map…', () => this.makeInsideMap(pl), 'A map of its inside, opened by double-clicking it');
+        if (inside) item('Open Inside Map', () => this.openMap(inside.id));
+        else item('Add Inside Map…', () => this.makeInsideMap(pl), 'A map of its inside, opened by double-clicking it');
         const roof = p.data.roofs[pl.id];
         if (roof) {
-          item('Edit roof', () => this.startEdit('roof', pl.id, 'edit'));
-          item('Roof image…', () => new ImagePicker(this.app, f => { const rf = p.data.roofs[pl.id]; if (rf) { p.checkpoint(); p.setRoof(pl.id, { ...rf, image: f.path }); } }).open());
-          item('Remove roof', () => { p.checkpoint(); p.setRoof(pl.id, null); });
-        } else item('Draw roof', () => this.startEdit('roof', pl.id, 'draw'), 'Covers it on the map until you click it open');
+          item('Edit Roof', () => this.startEdit('roof', pl.id, 'edit'));
+          item('Roof Image…', () => new ImagePicker(this.app, f => { const rf = p.data.roofs[pl.id]; if (rf) { p.checkpoint(); p.setRoof(pl.id, { ...rf, image: f.path }); } }).open());
+          item('Remove Roof', () => { p.checkpoint(); p.setRoof(pl.id, null); });
+        } else item('Draw Roof', () => this.startEdit('roof', pl.id, 'draw'), 'Covers it on the map until you click it open');
         m.createEl('hr');
-        item('Remove from map', () => p.takeOffMap(pl), 'Takes its pin, area and roof off the map');
+        item('Remove From Map', () => p.takeOffMap(pl), 'Takes its pin, area and roof off the map');
         m.createEl('hr');
       }
       const placeType = p.data.types.find(t => t.behaviour === 'place');
       const charType = p.data.types.find(t => t.id === 'character') ?? p.data.types.find(t => t.behaviour === 'token');
-      if (placeType) item(`New ${placeType.label.toLowerCase()}`, () => this.askName(e.clientX, e.clientY, placeType.id), 'Added where you right-clicked');
-      if (charType) item(`New ${charType.label.toLowerCase()}`, () => this.askName(e.clientX, e.clientY, charType.id), 'Added where you right-clicked');
-      item('New piece…', () => this.askName(e.clientX, e.clientY, null), 'Any type, added where you right-clicked');
+      if (placeType) item(`New ${placeType.label}`, () => this.askName(e.clientX, e.clientY, placeType.id), 'Added where you right-clicked');
+      if (charType) item(`New ${charType.label}`, () => this.askName(e.clientX, e.clientY, charType.id), 'Added where you right-clicked');
+      item('New Piece…', () => this.askName(e.clientX, e.clientY, null), 'Any type, added where you right-clicked');
       m.createEl('hr');
       item(this.placing ? 'Exit location mode' : 'Location mode', () => this.setPlacing(!this.placing), 'Every click on the map adds a location');
     });
@@ -1205,6 +1217,9 @@ export class WorldView extends ItemView {
       return;
     }
     if (d.kind === 'move') {
+      const into = d.moved ? this.peekPoint(e.clientX, e.clientY) : null, sub = this.peek?.map;
+      this.closePeek();
+      if (into && sub) { this.dragShift = null; this.dragPlaces = new Set(); this.r.map.removeClass('is-moving'); await this.dropInside(p, sub, into); return; }
       const shifted = this.dragPlaces; this.dragShift = null; this.dragPlaces = new Set(); this.renderAreas();
       // A plain click selects just that one piece.
       if (!d.moved) { if (this.doubleTap(d.id)) return; this.sel = new Set([d.id]); this.card = d.id; void this.render(); return; }
@@ -1244,6 +1259,70 @@ export class WorldView extends ItemView {
     this.refreshSelection();
     void this.renderCard(p);
   }
+  /* ───────── dropping into an inside map: hold a dragged piece over its building and the inside map opens ───────── */
+
+  private peek: { el: HTMLElement; frame: HTMLElement; mark: HTMLElement; map: M.SubMap } | null = null;
+  private peekTimer: number | null = null; private peekFor: string | null = null;
+  private peekClose: number | null = null;
+  /** Within reach of the open inside map (on the way to it from the building). */
+  private nearPeek(cx: number, cy: number) { const r = this.peek?.el.getBoundingClientRect(); return !!r && cx > r.left - 70 && cx < r.right + 70 && cy > r.top - 70 && cy < r.bottom + 70; }
+  /** While dragging pieces: resting over a place with an inside map opens it after a moment. */
+  private armPeek(placeId: string | null, cx: number, cy: number) {
+    if (placeId === this.peekFor) return;
+    this.peekFor = placeId;
+    if (this.peekTimer !== null) { window.clearTimeout(this.peekTimer); this.peekTimer = null; }
+    const sub = placeId ? this.project?.data.maps.find(m => m.anchor === placeId) : undefined;
+    if (!sub || this.peek?.map.id === sub.id) return;
+    this.peekTimer = window.setTimeout(() => { this.peekTimer = null; this.openPeek(sub, cx, cy); }, 650);
+  }
+  private openPeek(sub: M.SubMap, cx: number, cy: number) {
+    const p = this.project; if (!p) return;
+    this.closePeek();
+    const el = this.r.map.createDiv('se-peek');
+    el.createDiv({ cls: 'se-peek-h', text: `Inside ${p.get(sub.anchor)?.name ?? sub.name}` });
+    const aspect = p.data.aspects?.[sub.id] ?? 1, W = 280, H = Math.round(Math.max(120, Math.min(300, W / aspect)));
+    const frame = el.createDiv('se-peek-frame'); frame.style.width = `${W}px`; frame.style.height = `${H}px`;
+    const src = mapSrc(this.app, sub.image);
+    if (src) { const img = frame.createEl('img'); img.src = src; img.draggable = false; } else frame.addClass('is-blank');
+    for (const [id, pt] of Object.entries(p.data.places)) {
+      if (pt.map !== sub.id) continue;
+      const x = p.get(id); if (!x) continue;
+      const d = frame.createDiv('se-peek-place'); d.style.left = `${pt.x * 100}%`; d.style.top = `${pt.y * 100}%`; d.createEl('i'); d.createSpan({ text: x.name });
+    }
+    const mark = frame.createDiv('se-peek-mark'); mark.hide();
+    // Beside the pointer, kept inside the map.
+    const r = this.r.map.getBoundingClientRect();
+    let left = cx - r.left + 24, top = cy - r.top - H / 2;
+    if (left + W + 16 > r.width) left = cx - r.left - W - 40;
+    left = Math.max(6, left); top = Math.max(6, Math.min(top, r.height - H - 60));
+    el.style.left = `${left}px`; el.style.top = `${top}px`;
+    this.peek = { el, frame, mark, map: sub };
+  }
+  private closePeek() {
+    if (this.peekTimer !== null) { window.clearTimeout(this.peekTimer); this.peekTimer = null; }
+    if (this.peekClose !== null) { window.clearTimeout(this.peekClose); this.peekClose = null; }
+    this.peek?.el.remove(); this.peek = null; this.peekFor = null;
+  }
+  /** Where on the open inside map the pointer is (fractions of its picture), or null when it's not over it. */
+  private peekPoint(cx: number, cy: number): M.Point | null {
+    const pk = this.peek; if (!pk) return null;
+    const r = pk.frame.getBoundingClientRect();
+    if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) return null;
+    return { x: (cx - r.left) / r.width, y: (cy - r.top) / r.height };
+  }
+  /** Pieces dropped onto an open inside map: they're there from this scene on (in a place on it, if dropped inside one). */
+  private async dropInside(p: Project, sub: M.SubMap, pt: M.Point) {
+    const cur = p.current(this.tl); if (!cur) { new Notice(this.say('Add a chapter first: pieces move scene by scene.')); void this.render(); return; }
+    const ids = [...this.sel].filter(id => { const x = p.get(id); return x && p.behaviour(x) !== 'place' && !this.deadHere.has(id); });
+    if (!ids.length) { void this.render(); return; }
+    p.checkpoint({ what: ids.length > 1 ? `moving ${ids.length} pieces inside ${p.get(sub.anchor)?.name ?? sub.name}` : `moving ${p.get(ids[0])?.name} inside ${p.get(sub.anchor)?.name ?? sub.name}` });
+    const target = p.spot(sub.id, pt);
+    for (const id of ids) { const x = p.get(id)!; await p.place(x, cur, { ...target, ...(p.behaviour(x) === 'event' ? { only: true } : {}) }); }
+    p.saveSoon();
+    const where = p.get(sub.anchor)?.name ?? sub.name;
+    new Notice(this.say(ids.length > 1 ? `${ids.length} pieces are inside ${where} from scene ${cur.order} on.` : `${p.get(ids[0])?.name} is inside ${where} from scene ${cur.order} on.`));
+    this.hoverPlace = null; void this.render();
+  }
   private async putToken(p: Project, x: M.Piece, pt: { x: number; y: number }, newPiece = false) {
     const cur = p.current(this.tl);
     // Placing the dead would quietly bring them back: that takes “Undo death” on their card.
@@ -1268,10 +1347,9 @@ export class WorldView extends ItemView {
     const r = this.r.map.getBoundingClientRect(), pt = this.toStage(cx, cy), box = this.r.map.createDiv('se-namebox');
     box.style.left = `${Math.min(cx - r.left + 8, r.width - 240)}px`; box.style.top = `${Math.min(cy - r.top + 8, r.height - 110)}px`;
     const type = typeId ? p.type(typeId) : null;
-    const inp = box.createEl('input'); inp.placeholder = type ? `Name this ${type.label.toLowerCase()}` : 'Name';
+    const inp = box.createEl('input'); inp.type = 'text'; inp.placeholder = type ? `Name this ${type.label.toLowerCase()}` : 'Name';
     let sel: HTMLSelectElement | null = null;
     if (!type) { sel = box.createEl('select', { cls: 'dropdown' }); for (const t of p.data.types) sel.createEl('option', { text: t.label, value: t.id }); }
-    box.createEl('small', { text: `Enter to add · Esc to cancel${this.placing ? ' · location mode is on' : ''}` });
     inp.focus();
     inp.onkeydown = async ev => {
       if (ev.key === 'Escape') { ev.stopPropagation(); box.remove(); this.r.map.focus({ preventScroll: true }); return; }
@@ -1337,12 +1415,13 @@ export class WorldView extends ItemView {
       r.oncontextmenu = e => {
         e.preventDefault();
         const menu = new Menu();
-        menu.addItem(i => i.setTitle('Show card').onClick(() => r.click()));
-        if ((!p.onMap(x) || (b !== 'place' && cur && !at.get(x.id))) && !died.has(x.id)) menu.addItem(i => i.setTitle(b === 'place' || !cur ? 'Place on map' : 'Place in this scene').onClick(() => { this.putting = x.id; this.renderMap(p); }));
-        if (p.onMap(x)) menu.addItem(i => i.setTitle('Remove from map').onClick(() => p.takeOffMap(x)));
+        menu.addItem(i => i.setTitle('Show Card').onClick(() => r.click()));
+        if ((!p.onMap(x) || (b !== 'place' && cur && !at.get(x.id))) && !died.has(x.id)) menu.addItem(i => i.setTitle(b === 'place' || !cur ? 'Place on Map' : 'Place in This Scene').onClick(() => { this.putting = x.id; this.renderMap(p); }));
+        if (p.onMap(x)) menu.addItem(i => i.setTitle('Remove From Map').onClick(() => p.takeOffMap(x)));
+        if (b === 'token') menu.addItem(i => i.setTitle(this.focus.has(x.id) ? 'Hide From Timeline' : 'Show on Timeline').onClick(() => { if (this.focus.has(x.id)) this.focus.delete(x.id); else this.focus.add(x.id); this.afterFocus(p); }));
         menu.addSeparator();
         menu.addItem(i => i.setTitle('Rename…').onClick(() => this.rename(p, x)));
-        menu.addItem(i => i.setTitle('Open note').onClick(() => void this.app.workspace.openLinkText(x.path, '', 'tab')));
+        menu.addItem(i => i.setTitle('Open Note').onClick(() => void this.app.workspace.openLinkText(x.path, '', 'tab')));
         menu.addItem(i => i.setTitle('Delete').onClick(() => void p.deletePiece(x, true).then(() => { new Notice(`Deleted ${x.name}. Ctrl+Z brings it back.`); if (this.card === x.id) this.card = null; this.sel.delete(x.id); void this.render(); })));
         menu.showAtMouseEvent(e);
       };
@@ -1379,7 +1458,7 @@ export class WorldView extends ItemView {
     root.empty();
     if (!x) {
       c.createDiv({ cls: 'se-empty', text: 'Click a piece to see its card.' });
-      if (this.sel.size > 1) c.createDiv({ cls: 'se-sub', text: `${this.sel.size} selected · drag one to move them all` });
+      if (this.sel.size > 1) tip(c.createDiv({ cls: 'se-sub', text: `${this.sel.size} selected` }), 'Drag one to move them all');
       return;
     }
     const t = p.type(x.type), b = t.behaviour, tl = this.tl!;
@@ -1456,31 +1535,31 @@ export class WorldView extends ItemView {
     if (b === 'place') {
       section('On the map', undefined, 'Map');
       const here = p.all().filter(o => p.where(o)?.place === x.id);
-      c.createDiv({ cls: 'se-sub', text: p.data.places[x.id] ? `${here.length ? 'Here now: ' + here.map(o => o.name).join(', ') + '. ' : ''}Drag its pin to move it.` : 'Not on the map yet.' });
-      if (!p.data.places[x.id]) { const put = c.createEl('button', { cls: 'se-hb', text: 'Place on map' }); put.onclick = () => { this.putting = x.id; this.renderMap(p); }; }
+      { const sub = c.createDiv({ cls: 'se-sub', text: p.data.places[x.id] ? (here.length ? 'Here Now: ' + here.map(o => o.name).join(', ') : 'On the Map') : 'Not on the Map Yet' }); if (p.data.places[x.id]) tip(sub, 'Drag its pin to move it.'); }
+      if (!p.data.places[x.id]) { const put = c.createEl('button', { cls: 'se-hb', text: 'Place on Map' }); put.onclick = () => { this.putting = x.id; this.renderMap(p); }; }
       const scenesHere = tl.scenes.filter(s => s.where === x.id);
-      if (scenesHere.length) c.createDiv({ cls: 'se-sub', text: this.say(`Scenes set here: ${scenesHere.map(s => s.order).join(', ')}`) });
+      if (scenesHere.length) c.createDiv({ cls: 'se-sub', text: this.say(`Scenes Here: ${scenesHere.map(s => s.order).join(', ')}`) });
       if (p.data.places[x.id]) {
         const onMap = M.mapOfPlace(p.data, x.id);
-        if (onMap !== M.MAIN_MAP) c.createDiv({ cls: 'se-sub', text: `On the ${p.mapName(onMap)} map.` });
+        if (onMap !== M.MAIN_MAP) c.createDiv({ cls: 'se-sub', text: `On the ${p.mapName(onMap)} Map` });
         const acts = c.createDiv('se-acts se-start');
         const inside = p.insideMapOf(x.id);
-        if (inside) { const go = acts.createEl('button', { cls: 'se-hb', text: 'Open inside map' }); go.onclick = () => this.openMap(inside.id); }
-        else { const mk = acts.createEl('button', { cls: 'se-hb', text: 'Add inside map…' }); mk.onclick = () => this.makeInsideMap(x); }
-        const ic = acts.createEl('button', { cls: 'se-hb', text: p.data.icons[x.id] ? 'Change icon…' : 'Icon…' });
+        if (inside) { const go = acts.createEl('button', { cls: 'se-hb', text: 'Open Inside Map' }); go.onclick = () => this.openMap(inside.id); }
+        else { const mk = acts.createEl('button', { cls: 'se-hb', text: 'Add Inside Map…' }); mk.onclick = () => this.makeInsideMap(x); }
+        const ic = acts.createEl('button', { cls: 'se-hb', text: p.data.icons[x.id] ? 'Change Icon…' : 'Icon…' });
         
         ic.onclick = () => this.pickIcon(p, x.id);
-        const area = acts.createEl('button', { cls: 'se-hb', text: 'Edit area' });
+        const area = acts.createEl('button', { cls: 'se-hb', text: 'Edit Area' });
         
         area.onclick = () => this.startEdit('area', x.id, 'edit');
-        const draw = acts.createEl('button', { cls: 'se-hb', text: 'Redraw area' }); draw.onclick = () => this.startEdit('area', x.id, 'draw');
+        const draw = acts.createEl('button', { cls: 'se-hb', text: 'Redraw Area' }); draw.onclick = () => this.startEdit('area', x.id, 'draw');
         const roof = p.data.roofs[x.id];
-        const rb = acts.createEl('button', { cls: 'se-hb', text: roof ? 'Edit roof' : '+ Roof' });
+        const rb = acts.createEl('button', { cls: 'se-hb', text: roof ? 'Edit Roof' : '+ Roof' });
         
         rb.onclick = () => this.startEdit('roof', x.id, roof ? 'edit' : 'draw');
         if (roof) {
-          const pic = acts.createEl('button', { cls: 'se-hb', text: 'Roof image…' }); pic.onclick = () => new ImagePicker(this.app, f => { p.checkpoint(); p.setRoof(x.id, { ...roof, image: f.path }); }).open();
-          const rm = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'Remove roof' }); confirmClick(rm, 'Confirm', () => { p.checkpoint(); p.setRoof(x.id, null); });
+          const pic = acts.createEl('button', { cls: 'se-hb', text: 'Roof Image…' }); pic.onclick = () => new ImagePicker(this.app, f => { p.checkpoint(); p.setRoof(x.id, { ...roof, image: f.path }); }).open();
+          const rm = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'Remove Roof' }); confirmClick(rm, 'Confirm', () => { p.checkpoint(); p.setRoof(x.id, null); });
         }
       }
     } else if (tl.scenes.length) {
@@ -1518,32 +1597,38 @@ export class WorldView extends ItemView {
         if (deathId) {
           const ds = tl.scenes.find(s2 => s2.id === deathId);
           c.createDiv({ cls: 'se-sub', text: `Dead from ${sc} ${ds?.order ?? '?'} on${ds ? ` (${ds.label})` : ''}.` });
-          const un = acts.createEl('button', { cls: 'se-hb', text: 'Undo death' }); 
+          const un = acts.createEl('button', { cls: 'se-hb', text: 'Undo Death' }); 
           un.onclick = () => { p.checkpoint({ what: `undoing ${x.name}'s death` }); p.undoDeath(x, deathId); };
         } else if (w) {
-          const dh = acts.createEl('button', { cls: 'se-hb', text: 'Dies here' }); tip(dh, `Dead from ${sc} ${cur.order} on`); 
+          const dh = acts.createEl('button', { cls: 'se-hb', text: 'Dies Here' }); tip(dh, `Dead from ${sc} ${cur.order} on`); 
           dh.onclick = () => { p.checkpoint({ what: `${x.name}'s death` }); void p.markGone(x, cur, true); };
-          const g = acts.createEl('button', { cls: 'se-hb', text: 'Gone from here' }); tip(g, `Off the map from ${sc} ${cur.order} on`); g.onclick = () => { p.checkpoint({ what: `marking ${x.name} gone` }); void p.markGone(x, cur); };
+          const g = acts.createEl('button', { cls: 'se-hb', text: 'Gone From Here' }); tip(g, `Off the map from ${sc} ${cur.order} on`); g.onclick = () => { p.checkpoint({ what: `marking ${x.name} gone` }); void p.markGone(x, cur); };
         }
-        if (!w && !deathId) { const h = acts.createEl('button', { cls: 'se-hb', text: 'Place in this scene' }); tip(h, `Then click the map where it is in ${sc} ${cur.order}`); h.onclick = () => { this.putting = x.id; this.renderMap(p); }; }
+        if (!w && !deathId) { const h = acts.createEl('button', { cls: 'se-hb', text: 'Place in This Scene' }); tip(h, `Then click the map where it is in ${sc} ${cur.order}`); h.onclick = () => { this.putting = x.id; this.renderMap(p); }; }
       }
     }
-    section('Themes & rules');
+    section('Themes & Rules');
     const tags = c.createDiv('se-tags');
     for (const th of x.themes) {
       const s = tags.createSpan({ cls: 'se-tag', text: th }); s.style.setProperty('--c', p.data.themes[th]?.color ?? '#fff');
       if (p.data.themes[th]?.meaning) s.title = p.data.themes[th].meaning;
       const del = s.createEl('button', { cls: 'se-x', text: '×' }); del.onclick = () => void p.setThemes(x, x.themes.filter(y => y !== th));
     }
-    const ti = tags.createEl('input', { cls: 'se-tag-input' }); ti.placeholder = '+ theme or rule';
+    const ti = tags.createEl('input', { cls: 'se-tag-input' }); ti.type = 'text'; ti.placeholder = '+ Theme or Rule';
     const dl = tags.createEl('datalist'); dl.id = `se-themes-${x.id}`; for (const th of Object.keys(p.data.themes)) dl.createEl('option').value = th; ti.setAttribute('list', dl.id);
     ti.onkeydown = e => { if (e.key === 'Enter' && ti.value.trim()) void p.setThemes(x, [...new Set([...x.themes, ti.value.trim()])]); };
 
     const acts = root.createDiv('se-acts se-start se-card-acts');
-    const open = acts.createEl('button', { cls: 'se-hb', text: 'Open note' }); open.onclick = () => void this.app.workspace.openLinkText(x.path, '', 'tab');
+    const open = acts.createEl('button', { cls: 'se-hb', text: 'Open Note' }); open.onclick = () => void this.app.workspace.openLinkText(x.path, '', 'tab');
     acts.createEl('button', { cls: 'se-hb', text: 'Rename…' }).onclick = () => this.rename(p, x);
+    if (b === 'token') {
+      const shown = this.focus.has(x.id);
+      const fb = acts.createEl('button', { cls: `se-hb ${shown ? 'is-on' : ''}`, text: shown ? 'Hide From Timeline' : 'Show on Timeline' });
+      tip(fb, 'Lights up the scenes it’s in. Show more than one to see when they’re together.');
+      fb.onclick = () => { if (shown) this.focus.delete(x.id); else this.focus.add(x.id); this.afterFocus(p); };
+    }
     if (p.onMap(x)) {
-      const off = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'Remove from map' });
+      const off = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'Remove From Map' });
       tip(off, b === 'place' ? 'Takes its pin, area and roof off the map' : 'Takes away every stop on its journey');
       confirmClick(off, 'Confirm', () => p.takeOffMap(x));
     }
@@ -1591,7 +1676,7 @@ export class WorldView extends ItemView {
         if (now) closed.add(key); else closed.delete(key);
         p.data.ui.setupClosed = [...closed]; p.saveQuiet();
       };
-      if (hint) c.createDiv({ cls: 'se-sub', text: hint });
+      if (hint) tip(h, hint);
     };
     const bulk = (placeholder: string, onAdd: (labels: string[], extra: string) => void, extra?: [string, string][]) => {
       const row = c.createDiv('se-bulk');
@@ -1609,11 +1694,11 @@ export class WorldView extends ItemView {
     };
     const BEH = M.BEHAVIOURS;
 
-    head('Piece types', '');
+    head('Piece Types', '');
     for (const t of p.data.types) {
       const row = c.createDiv('se-def');
       const col = row.createEl('input', { cls: 'se-color' }); col.type = 'color'; col.value = t.color; col.onchange = () => { t.color = col.value; p.saveSoon(); };
-      const name = row.createEl('input', { cls: 'se-def-name' }); name.value = t.label;
+      const name = row.createEl('input', { cls: 'se-def-name' }); name.type = 'text'; name.value = t.label;
       name.onchange = () => { const v = name.value.trim(); if (!v) { name.value = t.label; return; } t.label = v; t.plural = v.endsWith('s') ? v : v + 's'; p.saveSoon(); };
       const beh = row.createEl('select', { cls: 'dropdown se-beh' }); for (const [v, l] of BEH) beh.createEl('option', { text: l, value: v }); beh.value = t.behaviour;
       beh.onchange = () => { t.behaviour = beh.value as M.Behaviour; p.saveSoon(); };
@@ -1623,11 +1708,11 @@ export class WorldView extends ItemView {
     }
     bulk('Add: Spirit, Ship…', (l, beh) => p.addTypes(l, beh as M.Behaviour), BEH);
 
-    head('Connection types', '');
+    head('Connection Types', '');
     for (const s of p.data.styles) {
-      const row = c.createDiv('se-def');
+      const row = c.createDiv('se-def se-def-conn');
       row.append(this.plugin.capture.swatch(s));
-      const name = row.createEl('input', { cls: 'se-def-name' }); name.value = s.label;
+      const name = row.createEl('input', { cls: 'se-def-name' }); name.type = 'text'; name.value = s.label;
       name.onchange = () => { const v = name.value.trim(); if (!v || v === s.label) { name.value = s.label; return; } void p.renameStyle(s, v); };
       const col = row.createEl('input', { cls: 'se-color' }); col.type = 'color'; col.value = s.color; col.onchange = () => { s.color = col.value; p.saveSoon(); this.renderSetup(p); };
       const dash = row.createEl('select', { cls: 'dropdown se-dash' }); for (const [d, t] of [['solid', '──'], ['dashed', '╌╌'], ['dotted', '┈┈']]) dash.createEl('option', { text: t, value: d }); dash.value = s.dash; dash.onchange = () => { s.dash = dash.value as M.LineStyle['dash']; p.saveSoon(); this.renderSetup(p); };
@@ -1638,71 +1723,84 @@ export class WorldView extends ItemView {
     }
     bulk('Add: Rival, Mentor…', l => p.addStyles(l));
 
-    head('Themes & rules', '');
+    head('Themes & Rules', '');
     for (const [k, th] of Object.entries(p.data.themes)) {
       const row = c.createDiv('se-def se-def-theme');
       const col = row.createEl('input', { cls: 'se-color' }); col.type = 'color'; col.value = th.color; col.onchange = () => { th.color = col.value; p.saveSoon(); };
-      const name = row.createEl('input', { cls: 'se-def-name' }); name.value = k;
+      const name = row.createEl('input', { cls: 'se-def-name' }); name.type = 'text'; name.value = k;
       name.onchange = () => { const v = name.value.trim(); if (!v || v === k || p.data.themes[v]) { name.value = k; return; } void p.renameTheme(k, v); };
       const used = p.usage('theme', k);
       row.createSpan({ cls: 'se-count', text: used ? String(used) : '' });
       delBtn(row, used, 'theme', () => { void p.renameTheme(k, null); });
-      const mean = row.createEl('textarea', { cls: 'se-meaning' }); mean.rows = 1; mean.placeholder = 'What it means…'; mean.value = th.meaning;
+      const mean = row.createEl('textarea', { cls: 'se-meaning' }); mean.rows = 1; mean.placeholder = 'What It Means…'; mean.value = th.meaning;
       mean.onchange = () => { th.meaning = mean.value.trim(); p.saveSoon(); };
       const fit = () => { mean.style.height = 'auto'; mean.style.height = `${Math.max(26, mean.scrollHeight + 2)}px`; };
       if (!CSS.supports('field-sizing', 'content')) { mean.addEventListener('input', fit); requestAnimationFrame(fit); }
     }
     bulk('Add: Eyes, Blood debt…', l => p.addThemes(l));
 
-    head(this.words.moments, '', 'Moments');
+    // Timeline: your words for scenes and dates (click one to rename it everywhere), then the dates.
+    head('Timeline', '', 'Moments');
+    const words = c.createDiv('se-words');
+    for (const key of ['scene', 'moment'] as const) {
+      const b = words.createEl('button', { cls: 'se-word', text: this.words[key] }); tip(b, `Rename\nWhat the plugin calls ${this.words[key === 'scene' ? 'scenes' : 'moments'].toLowerCase()} everywhere`);
+      b.onclick = () => this.wordBox(b, key);
+    }
     if (!p.data.moments.length) c.createDiv({ cls: 'se-empty', text: 'None yet.' });
     for (const m of p.data.moments) {
       const row = c.createDiv('se-def');
-      const name = row.createEl('input', { cls: 'se-def-name' }); name.value = m.label; name.onchange = () => { m.label = name.value.trim() || m.label; p.invalidateScenes(); p.saveSoon(); };
-      const sk = row.createEl('input', { cls: 'se-skip-text' }); sk.value = m.skipText ?? ''; sk.placeholder = 'time skip before it?'; 
+      const name = row.createEl('input', { cls: 'se-def-name' }); name.type = 'text'; name.value = m.label; name.onchange = () => { m.label = name.value.trim() || m.label; p.invalidateScenes(); p.saveSoon(); };
+      const sk = row.createEl('input', { cls: 'se-skip-text' }); sk.type = 'text'; sk.value = m.skipText ?? ''; sk.placeholder = 'Time Skip'; 
       sk.onchange = () => { const v = sk.value.trim(); m.skip = !!v; if (v) m.skipText = v; else delete m.skipText; p.invalidateScenes(); p.saveSoon(); };
       const used = (this.tl?.scenes ?? []).filter(s => s.span.meta.moment === m.id || s.span.meta.flash === m.id).length;
       row.createSpan({ cls: 'se-count', text: used ? String(used) : '' });
       delBtn(row, used, 'moment', () => { void p.deleteMoment(m.id); });
     }
 
-    head('Maps', '');
-    // One row per map: its name and picture on the left, its buttons on the right.
-    const mapRow = (label: string, sub: string, image: string | null, pick: () => void, clear: (() => void) | null, extra?: (acts: HTMLElement) => void) => {
+    head('Maps', 'Right-click a location on the map to give it an inside map.');
+    // One row per map: its name, where it is and its picture on the left; the buttons in the same slots on every row,
+    // so they line up (Open · Change · Clear · Remove).
+    const mapRow = (label: string, inside: string, image: string | null, pick: () => void, clear: () => void, open?: () => void, remove?: (b: HTMLButtonElement) => void) => {
       const row = c.createDiv('se-maprow');
       const info = row.createDiv('se-maprow-info');
       info.createDiv({ cls: 'se-map-name', text: label });
-      info.createDiv({ cls: 'se-map-file', text: `${image ? image.split('/').pop()! : 'blank sheet'}${sub ? ' · ' + sub : ''}` });
+      if (inside) info.createDiv({ cls: 'se-map-inside', text: `Inside ${inside}` });
+      info.createDiv({ cls: 'se-map-file', text: image ? image.split('/').pop()! : 'Blank Sheet' });
       const acts = row.createDiv('se-maprow-acts');
-      acts.createEl('button', { cls: 'se-hb', text: image ? 'Change…' : 'Choose…' }).onclick = pick;
-      if (image && clear) { const cl = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'Clear' }); cl.onclick = clear; }
-      extra?.(acts);
+      const slot = (text: string, fn: (() => void) | null) => { const b = acts.createEl('button', { cls: 'se-hb', text }); if (fn) b.onclick = fn; else b.addClass('is-empty-slot'); return b; };
+      slot('Open', open ?? null);
+      slot(image ? 'Change…' : 'Choose…', pick);
+      slot('Clear', image ? clear : null);
+      const x = acts.createEl('button', { cls: 'se-x', text: '×' });
+      if (remove) { tip(x, 'Remove This Map'); remove(x); } else x.addClass('is-empty-slot');
     };
     mapRow('World', '', p.data.map, () => this.pickMap(p), () => { p.checkpoint({ what: 'clearing the map picture' }); p.data.map = null; p.saveSoon(); this.renderSetup(p); });
     for (const m of p.data.maps) {
-      mapRow(m.name, `inside ${p.get(m.anchor)?.name ?? '?'}`, m.image, () => this.pickMap(p, m.id), () => { p.checkpoint({ what: `clearing the ${m.name} picture` }); m.image = null; p.saveSoon(); this.renderSetup(p); }, acts => {
-        acts.createEl('button', { cls: 'se-hb', text: 'Open' }).onclick = () => this.openMap(m.id);
-        const d2 = acts.createEl('button', { cls: 'se-x', text: '×' }); 
-        confirmClick(d2, 'Confirm', () => { if (this.mapId === m.id) this.openMap(M.MAIN_MAP); p.checkpoint(); p.removeMap(m.id); this.renderSetup(p); });
-      });
+      mapRow(m.name, p.get(m.anchor)?.name ?? '?', m.image, () => this.pickMap(p, m.id), () => { p.checkpoint({ what: `clearing the ${m.name} picture` }); m.image = null; p.saveSoon(); this.renderSetup(p); },
+        () => this.openMap(m.id),
+        b => confirmClick(b, 'Confirm', () => { if (this.mapId === m.id) this.openMap(M.MAIN_MAP); p.checkpoint(); p.removeMap(m.id); this.renderSetup(p); }));
     }
-    if (!p.data.maps.length) c.createDiv({ cls: 'se-sub', text: 'Inside maps: right-click a location.' });
-    const gr = c.createDiv('se-maprow se-fold-at');
-    gr.createDiv({ cls: 'se-map-name', text: 'Fold locations below' });
-    const ga = gr.createDiv('se-maprow-acts');
-    const gi = ga.createEl('input', { cls: 'se-num' }); gi.type = 'number'; gi.min = '0'; gi.max = '2400'; gi.step = '25'; gi.value = String(p.data.ui.groupBelow ?? 200);
-    ga.createSpan({ cls: 'se-faint', text: '% zoom' });
+    // A setting, not a map: set apart, as a labelled field.
+    const gr = c.createDiv('se-setting');
+    const gl = gr.createSpan({ text: 'Fold Locations Below' });
+    tip(gl, 'Below this map zoom, locations close together fold into one marker.');
+    const ga = gr.createDiv('se-setting-field');
+    const gi = ga.createEl('input'); gi.type = 'number'; gi.min = '0'; gi.max = '2400'; gi.step = '25'; gi.value = String(p.data.ui.groupBelow ?? 200);
+    ga.createSpan({ cls: 'se-faint', text: '%' });
     gi.onchange = () => { const v = Number(gi.value); if (Number.isFinite(v) && v >= 0) { p.data.ui.groupBelow = v; p.saveQuiet(); this.renderMap(p); } };
 
     const others = [...this.plugin.projects.values()].filter(o => o !== p);
     if (others.length) {
-      head('Copy from another story', 'Adds the types and themes this story doesn’t have.');
+      head('Copy From Another Story', 'Adds the types and themes this story doesn’t have.');
       const r = c.createDiv('se-acts se-start');
       const s = r.createEl('select', { cls: 'dropdown' }); for (const o of others) s.createEl('option', { text: o.name, value: o.folder });
       r.createEl('button', { cls: 'se-hb', text: 'Copy' }).onclick = () => { const o = this.plugin.projects.get(s.value); if (o) { p.copyDefinitionsFrom(o); new Notice(`Copied definitions from “${o.name}”.`); this.renderSetup(p); } };
     }
-    head('This story', `Its folder: ${p.folder}`);
-    const rm = c.createDiv('se-acts se-start').createEl('button', { cls: 'se-hb se-ghost', text: 'Remove story…' });
+    head('This Story', '');
+    const fr = c.createDiv('se-setting');
+    fr.createSpan({ text: 'Folder' });
+    fr.createSpan({ cls: 'se-setting-value', text: p.folder });
+    const rm = c.createDiv('se-acts se-start').createEl('button', { cls: 'se-hb', text: 'Remove Story…' });
     tip(rm, 'Stop using this folder as a story. Your chapters stay.');
     rm.onclick = () => new RemoveStoryModal(this.app, p, async world => {
       await this.plugin.removeStory(p, world);
@@ -1712,95 +1810,208 @@ export class WorldView extends ItemView {
 
   /* ───────── timeline ───────── */
 
-  private xOf(s: number) { const bands = this.tl?.t.bands ?? []; let x = LEFT + s * this.px; for (const b of bands) if (b.moment.skip && b.start <= s && b.start > 0) x += gapOf(b.moment); return x; }
-  private totalW() { return this.xOf(this.tl?.t.slots ?? 0) + 40; }
+  private xOf(s: number, px = this.px) { const bands = this.tl?.t.bands ?? []; let x = LEFT + s * px; for (const b of bands) if (b.moment.skip && b.start <= s && b.start > 0) x += gapOf(b.moment); return x; }
+  private totalW() { return this.xOf(this.tl?.t.slots ?? 0) + 6; }
   private sceneAtSlot(slot: number) { const l = this.tl?.scenes.filter(s => s.slot === slot) ?? []; return l.filter(s => s.kind !== 'flashback').sort((a, b) => a.order - b.order)[0] ?? l[0]; }
+  /** The toolbar column beside the timeline: the zoom, search, then one switch per layer (right-click Dates or Scenes to rename them). */
+  private renderTools(p: Project) {
+    const bar = this.r.bar, ui = p.data.ui, w = this.words; bar.empty();
+    const zoom = bar.createEl('button', { cls: 'se-tl-zoom' }); tip(zoom, 'Zoom\nClick to fit the whole story\nCtrl+wheel to zoom');
+    zoom.onclick = () => this.tlFit();
+    this.updateTlZoom();
+    const search = bar.createEl('button', { cls: `se-tool se-tool-find ${this.focus.size ? 'is-on' : ''}` });
+    icon(search, ['search'], 'S'); search.setAttribute('aria-label', 'Find on Timeline'); tip(search, 'Find on Timeline\nLight up the scenes a character or location is in');
+    search.onclick = () => this.openFind(search);
+    bar.createDiv('se-tools-sep');
+    const layers: [string, string[], string, string][] = [
+      ['dates', ['calendar-days', 'calendar'], w.moments, `Shift+, and Shift+. jump between ${w.moments.toLowerCase()}\nRight-click to rename`],
+      ['scenes', ['rectangle-horizontal', 'square'], w.scenes, `, and . step through ${w.scenes.toLowerCase()}\nRight-click to rename`],
+      ['events', ['diamond'], 'Events', 'Shown inside the scene they happen in'],
+      ['cast', ['users'], 'Cast', 'Who is there in each scene'],
+    ];
+    const tool = (key: string, icons: string[], label: string, hint: string) => {
+      const b = bar.createEl('button', { cls: `se-tool ${ui.open[key] !== false ? 'is-on' : ''}` });
+      icon(b, icons, label.charAt(0)); b.setAttribute('aria-label', label); tip(b, `${label}\n${hint}`);
+      b.onclick = () => {
+        ui.open[key] = ui.open[key] === false; p.saveQuiet(); this.renderTools(p); this.renderTimeline(p);
+        if (key === 'overview') requestAnimationFrame(() => { this.setDock(ui.dock); this.drawOverview(); });
+      };
+      if (key === 'dates' || key === 'scenes') b.oncontextmenu = e => {
+        e.preventDefault();
+        const m = new Menu(); m.addItem(i => i.setTitle('Rename…').onClick(() => this.wordBox(b, key === 'dates' ? 'moment' : 'scene'))); m.showAtMouseEvent(e);
+      };
+    };
+    for (const [k, i, l, h] of layers) tool(k, i, l, h);
+    bar.createDiv('se-spacer');
+    tool('overview', ['panel-bottom', 'minus'], 'Overview', 'The whole story in one strip');
+    this.r.ov.toggle(ui.open.overview !== false);
+  }
+  /** The timeline's zoom as a percentage of “fits the pane”. */
+  private updateTlZoom() {
+    const z = this.r.bar.querySelector('.se-tl-zoom'); if (!z) return;
+    const fit = this.fitPx(); z.setText(`${Math.round((this.px || fit) / fit * 100)}%`);
+  }
+  /** Find on Timeline: search a character or location, see what's shown (× to take one away), or clear it all. */
+  private openFind(anchor: HTMLElement) {
+    const p = this.project; if (!p) return;
+    const old = this.contentEl.querySelector('.se-findbox') as (HTMLElement & { __close?: () => void }) | null;
+    if (old) { old.__close?.(); return; }
+    const box = this.contentEl.createDiv('se-findbox');
+    const r = anchor.getBoundingClientRect(), host = this.contentEl.getBoundingClientRect();
+    box.style.left = `${r.right - host.left + 6}px`;
+    const input = box.createEl('input'); input.type = 'text'; input.placeholder = 'Character or Location';
+    const results = box.createDiv('se-find-results');
+    const shown = box.createDiv('se-find-shown');
+    const findable = (x: M.Piece) => p.behaviour(x) === 'place' || (p.behaviour(x) === 'token' && x.type === 'character');
+    const draw = () => {
+      results.empty(); shown.empty();
+      const q = input.value.trim().toLowerCase();
+      if (q) {
+        const hits = p.all().filter(x => findable(x) && !this.focus.has(x.id) && [x.name, ...x.aliases].some(n => n.toLowerCase().includes(q)))
+          .sort((a, b) => Number(!a.name.toLowerCase().startsWith(q)) - Number(!b.name.toLowerCase().startsWith(q)) || a.name.localeCompare(b.name)).slice(0, 8);
+        if (!hits.length) results.createDiv({ cls: 'se-find-none', text: 'Nothing matches.' });
+        for (const x of hits) {
+          const b = results.createEl('button', { cls: 'se-find-hit' });
+          b.createSpan({ cls: `se-find-mark ${p.behaviour(x) === 'place' ? 'is-place' : ''}` }).style.setProperty('--c', this.focusColor(p, x));
+          b.createSpan({ text: x.name });
+          b.onclick = () => { this.focus.add(x.id); input.value = ''; draw(); this.afterFocus(p); input.focus(); };
+        }
+      }
+      const list = [...this.focus].map(id => p.get(id)).filter((x): x is M.Piece => !!x);
+      if (list.length) {
+        shown.createDiv({ cls: 'se-find-h', text: 'Shown' });
+        for (const x of list) {
+          const row = shown.createDiv('se-find-row');
+          row.createSpan({ cls: `se-find-mark ${p.behaviour(x) === 'place' ? 'is-place' : ''}` }).style.setProperty('--c', this.focusColor(p, x));
+          row.createSpan({ cls: 'se-find-name', text: x.name });
+          const del = row.createEl('button', { cls: 'se-x', text: '×' }); tip(del, 'Remove');
+          del.onclick = () => { this.focus.delete(x.id); draw(); this.afterFocus(p); };
+        }
+        const clear = shown.createEl('button', { cls: 'se-hb se-find-clear', text: 'Clear' });
+        clear.onclick = () => { this.focus.clear(); draw(); this.afterFocus(p); };
+      }
+    };
+    input.oninput = draw;
+    const close = () => { box.remove(); document.removeEventListener('pointerdown', outside, true); };
+    // The search button is drawn again after each pick, so any search button counts as its own.
+    const outside = (e: PointerEvent) => { if (!box.contains(e.target as Node) && !(e.target as HTMLElement).closest?.('.se-tool-find')) close(); };
+    document.addEventListener('pointerdown', outside, true);
+    Object.assign(box, { __close: close });
+    input.onkeydown = e => {
+      if (e.key === 'Escape') { e.preventDefault(); close(); }
+      if (e.key === 'Enter') { e.preventDefault(); (results.querySelector('.se-find-hit') as HTMLElement | null)?.click(); }
+    };
+    draw();
+    box.style.top = `${Math.max(8, Math.min(r.top - host.top, host.height - box.offsetHeight - 8))}px`;
+    input.focus();
+  }
+  private focusColor(p: Project, x: M.Piece) { return this.povColor.get(x.id) ?? p.type(x.type)?.color ?? '#8a8794'; }
+  private afterFocus(p: Project) { this.renderTools(p); this.renderTimeline(p); if (this.card) void this.render(); }
+  /** What's being found, as pills on the ruler (look-only: the Find box changes them). */
+  private focusPills(p: Project) {
+    const list = [...this.focus].map(id => p.get(id)).filter((x): x is M.Piece => !!x);
+    if (!list.length) return '';
+    return `<div class="se-pills">${list.map(x => `<span class="se-pill ${p.behaviour(x) === 'place' ? 'is-place' : ''}" style="--c:${this.focusColor(p, x)}"><i></i>${esc(x.name)}</span>`).join('')}</div>`;
+  }
+  /** How a scene answers what's being found: gold where everything found is there together, half where some is, dim where none. */
+  private focusClass(p: Project, s: SceneEntry) {
+    if (!this.focus.size) return '';
+    const found = [...this.focus].map(id => p.get(id)).filter((x): x is M.Piece => !!x);
+    const places = found.filter(x => p.behaviour(x) === 'place'), chars = found.filter(x => p.behaviour(x) !== 'place');
+    if (places.length && !places.some(pl => p.within(s.where, pl.id))) return ' is-dim';
+    if (!chars.length) return ' is-together';
+    const n = chars.filter(x => this.presentIn(p, x, s)).length;
+    if (n === 0) return ' is-dim';
+    if (n === chars.length) return chars.length > 1 || places.length ? ' is-together' : '';
+    return ' is-some';
+  }
+  /** Is this character in the scene: its POV, or at the scene's place (where the POV is) and not gone. */
+  private presentIn(p: Project, x: M.Piece, s: SceneEntry) {
+    if (s.pov === x.id) return true;
+    const where = s.where; if (!where) return false;
+    const w = p.where(x, s.slot) as M.TrackEntry | null; return !!w && !w.gone && p.within(p.placeOfEntry(w), where);
+  }
+  private fitPx() {
+    const t = this.tl?.t; if (!t?.slots) return 40;
+    const skips = t.bands.filter(b => b.moment.skip && b.start > 0).reduce((n, b) => n + gapOf(b.moment), 0);
+    return Math.max(14, Math.min(160, ((this.r.wrap.clientWidth || 800) - LEFT - 12 - skips) / t.slots));
+  }
   private renderTimeline(p: Project) {
     const tl = this.tl!, t = tl.t, el2 = this.r.tlEl;
+    this.r.focusBar.hide();
     if (!tl.scenes.length) {
       el2.style.width = ''; el2.empty();
       const e = el2.createDiv('se-empty se-pad se-nochapters');
       e.createSpan({ text: 'No chapters yet. ' });
-      e.createEl('button', { cls: 'mod-cta', text: 'New chapter' }).onclick = () => this.plugin.newChapter();
+      e.createEl('button', { cls: 'mod-cta', text: 'New Chapter' }).onclick = () => this.plugin.newChapter();
       this.drawOverview(); return;
     }
-    if (!this.px) { const w = this.r.wrap.clientWidth || 800; this.px = Math.max(6, Math.min(30, (w - LEFT - 50) / t.slots)); }
-    const W = this.totalW(), cur = p.current(tl), ui = p.data.ui, px = this.px;
-    let h = `<div class="se-ruler" style="width:${W}px">`;
-    for (const b of t.bands) {
-      const nextSkip = t.bands.find(o => o.moment.skip && o.start === b.end && o.start > 0);
-      const a = this.xOf(b.start), w = this.xOf(b.end) - a - (nextSkip ? gapOf(nextSkip.moment) : 0), g = gapOf(b.moment), mid = esc(b.moment.id);
-      if (b.moment.skip && b.start > 0) h += `<div class="se-skip" data-gap="${mid}" style="left:${a - g}px;width:${g}px"></div><div class="se-skiplabel" data-gap="${mid}" style="left:${a - g / 2}px">⤳ ${esc(M.skipLabel(b.moment))}</div>`;
-      h += `<div class="se-band" data-moment="${esc(b.moment.id)}" style="left:${a}px;width:${w}px">${w > 30 ? esc(b.moment.label) : ''}</div>`;
-      h += `<div class="se-edge" data-moment="${esc(b.moment.id)}" style="left:${a - 4}px"></div>`;
-      // Where no other moment takes over, its right edge can be dragged to end it sooner (or later).
-      if (!t.bands.some(o => o.start === b.end)) h += `<div class="se-edge se-edge-end" data-moment-end="${mid}" style="left:${a + w - 4}px"></div>`;
-    }
-    if (px >= 6) for (let s = 0; s < t.slots; s++) h += `<div class="se-tick" style="left:${this.xOf(s)}px"></div>`;
+    if (!this.px) this.px = this.fitPx();
+    const ui = p.data.ui, on = (k: string) => ui.open[k] !== false;
+    const W = this.totalW(), cur = p.current(tl), px = this.px, sc = this.words.scene;
+    // The ruler: ticks, time skip names, and the playhead's handle (the only place to drag it).
+    let h = `<div class="se-ruler" style="width:${W}px">${this.focusPills(p)}`;
+    if (px >= 5) for (let s = 0; s < t.slots; s++) h += `<div class="se-tick" style="left:${this.xOf(s) + px / 2}px"></div>`;
+    for (const b of t.bands) if (b.moment.skip && b.start > 0) h += `<div class="se-skiplabel" data-gap="${esc(b.moment.id)}" style="left:${this.xOf(b.start) - gapOf(b.moment) / 2}px">⤳ ${esc(M.skipLabel(b.moment))}</div>`;
+    if (cur) h += `<div class="se-ph-head" style="left:${this.xOf(cur.slot) + px / 2}px"></div>`;
     h += `</div>`;
-    for (const b of t.bands) if (b.moment.skip && b.start > 0) h += `<div class="se-skipline" style="left:${this.xOf(b.start) - gapOf(b.moment)}px;width:${gapOf(b.moment)}px"></div>`;
-    const head = (key: string, label: string) => `<div class="se-sec"><span class="se-grip" draggable="true" data-grip="${key}">⋮⋮</span><span class="se-tw" data-tw="${key}">${ui.open[key] ? '▾' : '▸'} ${esc(label)}</span></div>`;
-    const order = [...ui.order.filter(k => k in SECTION_LABEL), ...Object.keys(SECTION_LABEL).filter(k => !ui.order.includes(k))];
-    for (const key of order) {
-      h += `<div class="se-section" data-section="${key}">`;
-      if (key === 'scenes') {
-        h += head(key, this.say(SECTION_LABEL[key]));
-        if (ui.open[key]) {
-          const bySlot = new Map<number, SceneEntry[]>();
-          for (const s of tl.scenes) (bySlot.get(s.slot) ?? bySlot.set(s.slot, []).get(s.slot)!).push(s);
-          // As tall as the tallest stack of scenes happening at the same time (one row when none are).
-          const rows = Math.min(ROWS, Math.max(1, ...[...bySlot.values()].map(l => l.length)));
-          h += `<div class="se-track" style="width:${W}px;height:${rows * ROW_H + 8}px">`;
-          for (const [slot, list] of bySlot) {
-            const vis = list.slice(0, ROWS); if (cur && list.includes(cur) && !vis.includes(cur)) vis[ROWS - 1] = cur;
-            vis.forEach((s, k) => {
-              const pov = s.pov ? p.get(s.pov) : undefined;
-              const kind = esc(s.kind === 'flashback' ? ' · flashback' : s.kind === 'parallel' ? ` · same time as ${this.words.scene.toLowerCase()} ${s.ref ?? ''}` : '');
-              h += `<div class="se-clip ${s === cur ? 'is-cur' : ''} ${s.kind === 'flashback' ? 'is-flash' : ''} ${pov ? '' : 'is-nopov'}" data-scene="${s.order}" style="--c:${pov ? this.povColor.get(pov.id) : '#8a8794'};left:${this.xOf(slot) + 1}px;top:${4 + k * ROW_H}px;width:${Math.max(5, px - 2)}px" title="Scene ${s.order} · ${esc(s.label)}${pov ? ' · ' + esc(pov.name) : ' · no POV set'}${kind}\nClick: show on the map · double-click: open it">${px >= 22 ? s.order : ''}</div>`;
-            });
-            if (list.length > ROWS) h += `<div class="se-more" style="left:${this.xOf(slot) + 1}px;top:${4 + ROWS * ROW_H - 2}px">+${list.length - ROWS}</div>`;
-          }
-          h += `</div>`;
+    // Scenes by time slot: scenes at the same time share a slot and split its height.
+    const bySlot = new Map<number, SceneEntry[]>();
+    for (const s of tl.scenes) (bySlot.get(s.slot) ?? bySlot.set(s.slot, []).get(s.slot)!).push(s);
+    for (const l of bySlot.values()) l.sort((a, b) => a.order - b.order);
+    const tallest = Math.max(1, ...[...bySlot.values()].map(l => l.length));
+    const datesOn = on('dates') && t.bands.length > 0, top = datesOn ? DATE_HEAD + 4 : 4;
+    void tallest;
+    h += `<div class="se-tlbody ${on('scenes') ? '' : 'is-bare'}" style="width:${W}px">`;
+    if (datesOn) for (const b of t.bands) {
+      const nextSkip = t.bands.find(o => o.moment.skip && o.start === b.end && o.start > 0);
+      const a = this.xOf(b.start), w = this.xOf(b.end) - a - (nextSkip ? gapOf(nextSkip.moment) : 0), mid = esc(b.moment.id);
+      if (b.moment.skip && b.start > 0) h += `<div class="se-skip" data-gap="${mid}" style="left:${a - gapOf(b.moment)}px;width:${gapOf(b.moment)}px"></div>`;
+      h += `<div class="se-date" style="left:${a}px;width:${Math.max(2, w - 2)}px"><div class="se-date-name" data-moment="${mid}" data-tip="${esc(b.moment.label)}">${esc(b.moment.label)}</div></div>`;
+      h += `<div class="se-edge" data-moment="${mid}" style="left:${a - 4}px"></div>`;
+      if (!t.bands.some(o => o.start === b.end)) h += `<div class="se-edge se-edge-end" data-moment-end="${mid}" style="left:${a + w - 6}px"></div>`;
+    }
+    // Events, by the scene they belong to.
+    const evBy = new Map<string, M.Piece[]>();
+    if (on('events')) for (const x of p.all()) {
+      if (p.behaviour(x) !== 'event') continue;
+      for (const e of p.data.track[x.id] ?? []) (evBy.get(e.s) ?? evBy.set(e.s, []).get(e.s)!).push(x);
+    }
+    const evHtml = (x: M.Piece, s: SceneEntry, style = '') => `<div class="se-ev" data-id="${esc(x.id)}" data-scene="${s.order}" data-tip="${esc(x.name)}"${style ? ` style="${style}"` : ''}></div>`;
+    const tokens = on('cast') ? p.all().filter(x => p.behaviour(x) === 'token' && x.type === 'character') : [];
+    for (const [slot, list] of bySlot) {
+      h += `<div class="se-slot" style="left:${this.xOf(slot) + 1}px;width:${Math.max(4, px - 2)}px;top:${top}px">`;
+      // An event placed in two scenes that happen at the same time sits on the line between them.
+      const shared = new Map<string, number[]>();
+      list.forEach((s, i) => { for (const x of (s.id && evBy.get(s.id)) || []) (shared.get(x.id) ?? shared.set(x.id, []).get(x.id)!).push(i); });
+      const between = [...shared].filter(([, idx]) => idx.length > 1);
+      list.forEach(s => {
+        const pov = s.pov ? p.get(s.pov) : undefined, place = p.get(s.where)?.name ?? '';
+        const cls = `se-clip ${s === cur ? 'is-cur' : ''} ${s.kind === 'flashback' ? 'is-flash' : ''} ${pov ? '' : 'is-nopov'}${this.focusClass(p, s)}`;
+        const kind = s.kind === 'flashback' ? ' · Flashback' : s.kind === 'parallel' ? ` · Same Time as ${sc} ${s.ref ?? ''}` : '';
+        const tipText = [`${sc} ${s.order}${kind}`, s.label, pov ? `POV: ${pov.name}` : '', place ? `Where: ${place}` : ''].filter(Boolean).join('\n');
+        h += `<div class="${cls}" data-scene="${s.order}" data-tip="${esc(tipText)}" style="--c:${pov ? this.povColor.get(pov.id) : '#8a8794'}">`;
+        if (px >= 18 && on('scenes')) h += `<div class="se-clip-h"><b>${s.order}</b>${place && px >= 70 ? `<span>${esc(place)}</span>` : ''}</div>`;
+        const own = ((s.id && evBy.get(s.id)) || []).filter(x => !between.some(([id]) => id === x.id));
+        if (own.length) h += `<div class="se-clip-evs">${own.map(x => evHtml(x, s)).join('')}</div>`;
+        if (tokens.length && px >= 24 && on('scenes')) {
+          const here = tokens.filter(x => this.presentIn(p, x, s)), show = here.slice(0, Math.max(1, Math.floor((px - 24) / 11)));
+          if (here.length) h += `<div class="se-cast" data-tip="${esc(here.map(x => x.name).join(', '))}">${show.map(x => `<i style="--c:${this.povColor.get(x.id) ?? '#b9b6c3'}"></i>`).join('')}${here.length > show.length ? `<span>+${here.length - show.length}</span>` : ''}</div>`;
         }
-      } else if (key === 'events') {
-        const evs = this.events(p);
-        h += head(key, `${this.say(SECTION_LABEL[key])}${evs.length ? ' · ' + evs.length : ''}`);
-        if (ui.open[key]) h += `<div class="se-track" style="width:${W}px;height:22px">` + evs.map(ev => `<div class="se-ev" data-id="${esc(ev.p.id)}" data-scene="${ev.order}" data-t="${esc(ev.p.name)}${ev.place ? ' · ' + esc(ev.place) : ''}" style="left:${this.xOf(ev.slot) + px / 2}px"></div>`).join('') + `</div>`;
-      } else {
-        const sel = p.get(this.card);
-        const who = [...this.povColor.keys(), ...(sel && p.behaviour(sel) === 'token' && !this.povColor.has(sel.id) ? [sel.id] : [])].filter(id => p.get(id));
-        h += head(key, `${this.say(SECTION_LABEL[key])} (POV characters${who.length > this.povColor.size ? ' + selected' : ''})`);
-        if (ui.open[key]) {
-          const at = new Map<string, (string | null)[]>();
-          for (const id of who) { const x = p.get(id)!; at.set(id, Array.from({ length: t.slots }, (_, s) => p.where(x, s)?.place ?? null)); }
-          const used = [...new Set([...at.values()].flat().filter((v): v is string => !!v && !!p.get(v)))].sort((a, b) => p.get(a)!.name.localeCompare(p.get(b)!.name));
-          if (!used.length) h += `<div class="se-empty se-pad">Story lines appear once POV characters are at places.</div>`;
-          else {
-            const laneH = 16, H = used.length * laneH + 10, yOf = (pl: string) => 6 + used.indexOf(pl) * laneH + laneH / 2;
-            h += `<div class="se-sl" style="width:${W}px;height:${H}px">`;
-            used.forEach((pl, k) => { h += `<div class="se-lane" style="top:${6 + k * laneH + laneH / 2}px"></div><div class="se-pl" style="top:${6 + k * laneH + 1}px">${esc(p.get(pl)!.name)}</div>`; });
-            let paths = '';
-            who.forEach((id, k) => {
-              const off = (k - who.length / 2) * 0.9; let d = '', pen = false;
-              const list = at.get(id)!;
-              for (let s = 0; s < t.slots; s++) {
-                const pl = list[s]; const skipHere = t.bands.some(b => b.moment.skip && b.start === s && s > 0);
-                if (!pl || skipHere) pen = false; if (!pl) continue;
-                d += `${pen ? ' L' : ' M'}${(this.xOf(s) + px / 2).toFixed(1)} ${(yOf(pl) + off).toFixed(1)}`; pen = true;
-              }
-              if (!d) return;
-              const strong = cur?.pov === id || this.card === id;
-              paths += `<path d="${d}" fill="none" stroke="${this.povColor.get(id) ?? '#fff'}" stroke-width="${strong ? 3 : 1.4}" opacity="${strong ? 1 : 0.5}" stroke-linejoin="round"><title>${esc(p.get(id)!.name)}</title></path>`;
-            });
-            h += `<svg width="${W}" height="${H}">${paths}</svg></div>`;
-          }
-        }
+        h += `</div>`;
+      });
+      for (const [id, idx] of between) {
+        const x = p.get(id)!, s = list[idx[0]], f = (idx[0] + idx[idx.length - 1] + 1) / 2 / list.length;
+        h += evHtml(x, s, `position:absolute;left:50%;top:${(f * 100).toFixed(2)}%;transform:translate(-50%,-50%) rotate(45deg);z-index:3`);
       }
       h += `</div>`;
     }
+    if (cur) h += `<div class="se-playhead" style="left:${this.xOf(cur.slot) + px / 2 - 0.5}px"></div>`;
+    h += `</div>`;
     el2.style.width = `${W}px`;
     el2.innerHTML = h;
-    if (cur) { const ph = el2.createDiv('se-playhead'); ph.style.left = `${this.xOf(cur.slot) + px / 2 - 1}px`; ph.style.height = `${el2.scrollHeight}px`; }
+    el2.querySelectorAll<HTMLElement>('[data-tip]').forEach(e => { if (e.dataset.tip) tip(e, e.dataset.tip); });
+    this.updateTlZoom();
     this.renderCaption(p);
     this.drawOverview();
   }
@@ -1815,10 +2026,17 @@ export class WorldView extends ItemView {
       // Point at the scene that moves time on at that slot, so two scenes never point at each other.
       const anchor = this.startSceneAt(t.slot) ?? t;
       if (anchor === s || s.slot === t.slot) { new Notice(this.say(`Scene ${s.order} already happens at that time.`)); return; }
-      const set = { with: await p.ensureSceneId(anchor), flash: undefined };
-      p.checkpoint({ undo: () => p.setSceneMeta(s.file, s.index, old), redo: () => p.setSceneMeta(s.file, s.index, set), what: this.say(`making scene ${s.order} happen alongside scene ${anchor.order}`) });
+      const before = { ...old, moment: s.span.meta.moment }, moment = s.span.meta.moment ? p.moment(s.span.meta.moment) : undefined;
+      const set = { with: await p.ensureSceneId(anchor), flash: undefined, moment: undefined };
+      // A date starting here moves on to the next scene that moves time on (the same step on redo).
+      const handed = await p.handOnMoment(s);
+      p.checkpoint({
+        undo: async () => { if (handed) await p.setSceneMeta(handed.file, handed.index, { moment: undefined }); await p.setSceneMeta(s.file, s.index, before); },
+        redo: async () => { if (handed && moment) await p.setSceneMeta(handed.file, handed.index, { moment: moment.id }); await p.setSceneMeta(s.file, s.index, set); },
+        what: this.say(`making scene ${s.order} happen alongside scene ${anchor.order}`),
+      });
       await p.setSceneMeta(s.file, s.index, set);
-      new Notice(this.say(`Scene ${s.order} now happens at the same time as scene ${anchor.order}.`));
+      new Notice(this.say(`Scene ${s.order} now happens at the same time as scene ${anchor.order}.`) + (moment ? handed ? this.say(` ${moment.label} now starts at scene ${handed.order}.`) : ` ${moment.label} no longer has a start: the next scene starts its own.` : ''));
       return;
     }
     if (to.before === undefined) return;
@@ -1839,9 +2057,9 @@ export class WorldView extends ItemView {
     const title = p.chapterTitle(mine);
     new Notice(moved ? `${title} is now chapter ${order1.indexOf(mine) + 1}.` : this.say(`Scene ${s.order} no longer happens at the same time as another ${sc}.`));
   }
-  /** An event dragged to another scene's slot. */
-  private async dropEvent(p: Project, id: string, fromOrder: number, slot: number | undefined) {
-    const tl = this.tl, from = tl?.scenes[fromOrder - 1], to = slot === undefined ? undefined : this.sceneAtSlot(slot), x = p.get(id);
+  /** An event dragged onto another scene. */
+  private async dropEvent(p: Project, id: string, fromOrder: number, toOrder: number | undefined) {
+    const tl = this.tl, from = tl?.scenes[fromOrder - 1], to = toOrder === undefined ? undefined : tl?.scenes[toOrder - 1], x = p.get(id);
     if (!from || !to || !x || to === from) return;
     const entry = p.data.track[id]?.find(e => e.s === from.id); if (!entry) return;
     p.checkpoint({ what: `moving ${x.name}` });
@@ -1855,20 +2073,22 @@ export class WorldView extends ItemView {
   /** Small editor under a moment on the ruler: name, note, time skip, delete. */
   private editMoment(id: string, anchor: HTMLElement) {
     const p = this.project, m = p?.moment(id); if (!p || !m) return;
+    const old = this.contentEl.querySelector('.se-momentbox') as HTMLElement | null;
     this.closeMomentBox();
-    const box = this.contentEl.createDiv('se-momentbox');
+    if (old?.dataset.moment === id) return;
+    const box = this.contentEl.createDiv('se-momentbox'); box.dataset.moment = id;
     const r = anchor.getBoundingClientRect(), c = this.contentEl.getBoundingClientRect();
     box.style.left = `${Math.max(8, Math.min(r.left - c.left, c.width - 300))}px`;
     const changed = () => { p.invalidateScenes(); p.saveSoon(); };
-    const name = box.createEl('input', { cls: 'se-namefield' }); name.value = m.label; name.placeholder = this.say('Moment name');
+    const name = box.createEl('input', { cls: 'se-namefield' }); name.type = 'text'; name.value = m.label; name.placeholder = this.say('Moment name');
     name.oninput = () => { const v = name.value.trim(); if (v) { m.label = v; changed(); } };
-    const note = box.createEl('input'); note.value = m.note; note.placeholder = 'Note (optional)';
+    const note = box.createEl('input'); note.type = 'text'; note.value = m.note; note.placeholder = 'Note';
     note.oninput = () => { m.note = note.value.trim(); changed(); };
-    const skl = box.createDiv({ cls: 'se-sub', text: 'Time skip before it (optional)' }); skl.style.margin = '2px 0 -3px';
-    const sk = box.createEl('input'); sk.value = m.skipText ?? ''; sk.placeholder = 'e.g. Two years later';
+    const skl = box.createDiv({ cls: 'se-sub', text: 'Time Skip' }); skl.style.margin = '2px 0 -3px';
+    const sk = box.createEl('input'); sk.type = 'text'; sk.value = m.skipText ?? ''; sk.placeholder = 'Time Skip';
     sk.oninput = () => { const v = sk.value.trim(); m.skip = !!v; if (v) m.skipText = v; else delete m.skipText; changed(); };
     const band = this.tl?.t.bands.find(b => b.moment.id === id), start = band && this.startSceneAt(band.start);
-    if (band && start) box.createDiv({ cls: 'se-sub', text: this.say(`Starts at scene ${start.order} · ${band.end - band.start} scene${band.end - band.start > 1 ? 's' : ''} long. Drag its left edge on the ruler to change that.`) });
+    if (band && start) tip(box.createDiv({ cls: 'se-sub', text: this.say(`Starts at Scene ${start.order} · ${band.end - band.start} Scene${band.end - band.start > 1 ? 's' : ''} Long`) }), this.say('Drag its left edge on the ruler to change where it starts.'));
     const acts = box.createDiv('se-acts');
     const del = acts.createEl('button', { cls: 'se-hb se-ghost se-left', text: 'Delete' });
     
@@ -1977,30 +2197,39 @@ export class WorldView extends ItemView {
     if (x < L + LEFT + 10 || x > R - 60) w.scrollLeft = x - w.clientWidth / 2;
     this.drawOverview();
   }
-  private ovX(s: number) { const w = this.r.ov.clientWidth, total = this.totalW() - 40 - LEFT; return total > 0 ? (this.xOf(s) - LEFT) / total * w : 0; }
+  /** The overview is the timeline at 100%, drawn small: same start, same length, so at 100% every scene sits right under itself. */
+  private ovX(s: number) { return this.xOf(s, this.fitPx()) - LEFT; }
+  private placeOverview() {
+    const ov = this.r.ov, host = ov.parentElement; if (!host || !this.tl) return;
+    const left = this.r.tlEl.getBoundingClientRect().left + this.r.wrap.scrollLeft - host.getBoundingClientRect().left + LEFT;
+    ov.style.setProperty('margin-left', `${left}px`, 'important'); ov.style.setProperty('margin-right', '0px', 'important'); ov.style.alignSelf = 'flex-start';
+    ov.style.width = `${Math.max(20, this.ovX(this.tl.t.slots))}px`;
+  }
+  /**
+   * The overview: the whole story as one thin ribbon, look-only. Dates are light and dark stretches, scenes their POV colour
+   * (where scenes run side by side, the one the playhead is on), events tiny dots; the part on screen is a little brighter.
+   */
   private drawOverview() {
     const tl = this.tl, p = this.project; if (!tl || !p || !this.r) return;
+    this.placeOverview();
     const ov = this.r.ov, cv = this.r.ovc, w = ov.clientWidth, h = ov.clientHeight, dpr = window.devicePixelRatio || 1;
     if (!w || !h) return;
     cv.width = w * dpr; cv.height = h * dpr;
     const g = cv.getContext('2d'); if (!g) return;
     g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
-    for (const b of tl.t.bands) { const a = this.ovX(b.start); g.fillStyle = '#ffffff0a'; g.fillRect(a, 0, this.ovX(b.end) - a - 1, h); if (b.moment.skip && b.start > 0) { g.fillStyle = '#f2c94c66'; g.fillRect(a - 3, 0, 3, h); } }
-    for (const s of tl.scenes) { g.fillStyle = s.kind === 'flashback' ? '#b8a27a' : (s.pov && this.povColor.get(s.pov)) || '#8a8794'; g.globalAlpha = 0.8; g.fillRect(this.ovX(s.slot), 4, Math.max(1, this.ovX(s.slot + 1) - this.ovX(s.slot) - 0.5), h - 12); }
-    g.globalAlpha = 1; g.fillStyle = '#e07a86';
-    for (const ev of this.events(p)) g.fillRect(this.ovX(ev.slot), h - 5, 2, 4);
+    tl.t.bands.forEach((b, i) => { const a = this.ovX(b.start); g.fillStyle = i % 2 ? '#ffffff14' : '#ffffff08'; g.fillRect(a, 0, this.ovX(b.end) - a, h); });
     const cur = p.current(tl);
+    const bySlot = new Map<number, SceneEntry>();
+    for (const s of tl.scenes) { const had = bySlot.get(s.slot); if (!had || (s === cur) || (had.kind === 'flashback' && s.kind !== 'flashback' && had !== cur)) bySlot.set(s.slot, s); }
+    g.globalAlpha = 0.85;
+    for (const [slot, s] of bySlot) { g.fillStyle = s.kind === 'flashback' ? '#b8a27a' : (s.pov && this.povColor.get(s.pov)) || '#8a8794'; g.fillRect(this.ovX(slot), 1, Math.max(1, this.ovX(slot + 1) - this.ovX(slot) - 0.5), h - 2); }
+    g.globalAlpha = 0.9; g.fillStyle = '#ffffff';
+    for (const ev of this.events(p)) { const x = (this.ovX(ev.slot) + this.ovX(ev.slot + 1)) / 2; g.fillRect(x - 1, h / 2 - 1, 2, 2); }
+    g.globalAlpha = 1;
     this.r.ovHead.style.left = `${this.ovX((cur?.slot ?? 0) + 0.5)}px`;
-    const win = this.r.ovWin;
-    win.style.display = '';
-    const total = this.totalW() - 40 - LEFT, wr = this.r.wrap;
+    const total = this.totalW() - 6 - LEFT, wr = this.r.wrap, win = this.r.ovWin;
     const a = Math.max(0, wr.scrollLeft / total * w), b = Math.min(w, (wr.scrollLeft + wr.clientWidth - LEFT) / total * w);
-    win.style.left = `${a}px`; win.style.width = `${Math.max(6, b - a)}px`;
-  }
-  private slotFromOverview(cx: number) {
-    const r = this.r.ov.getBoundingClientRect(), x = cx - r.left; let best = 0, d = Infinity;
-    for (let s = 0; s < (this.tl?.t.slots ?? 0); s++) { const dd = Math.abs(this.ovX(s + 0.5) - x); if (dd < d) { d = dd; best = s; } }
-    return best;
+    win.style.left = `${a}px`; win.style.width = `${Math.max(4, b - a)}px`;
   }
   private slotAt(cx: number) { const r = this.r.tlEl.getBoundingClientRect(), x = cx - r.left; let best = 0; for (let s = 0; s < (this.tl?.t.slots ?? 0); s++) if (this.xOf(s) <= x) best = s; return best; }
   private goSlot(slot: number) { const p = this.project, sc = this.sceneAtSlot(slot); if (p && sc && sc.order !== p.current(this.tl)?.order) p.setView(sc.order); }
@@ -2008,89 +2237,82 @@ export class WorldView extends ItemView {
     if (!this.tl?.scenes.length) return;
     const wr = this.r.wrap, r = wr.getBoundingClientRect(), at = cx ?? r.left + wr.clientWidth / 2;
     const s = this.slotAt(at), onScreen = this.xOf(s) - wr.scrollLeft;
-    this.px = Math.max(2, Math.min(80, this.px * f));
+    this.px = Math.max(4, Math.min(300, this.px * f)); this.pxFit = false;
     const p = this.project; if (p) this.renderTimeline(p);
     wr.scrollLeft = this.xOf(s) - onScreen; this.drawOverview();
   }
   private tlFit() {
-    const tl = this.tl; if (!tl?.scenes.length) return;
-    const skips = tl.t.bands.filter(b => b.moment.skip && b.start > 0).reduce((n, b) => n + gapOf(b.moment), 0);
-    this.px = Math.max(2, (this.r.wrap.clientWidth - LEFT - 50 - skips) / tl.t.slots);
+    if (!this.tl?.scenes.length) return;
+    this.px = this.fitPx(); this.pxFit = true;
     const p = this.project; if (p) this.renderTimeline(p);
     this.r.wrap.scrollLeft = 0; this.drawOverview();
   }
   private wireTimeline() {
-    const tl = this.r.tlEl, wrap = this.r.wrap, ov = this.r.ov;
+    const tl = this.r.tlEl, wrap = this.r.wrap;
     tl.addEventListener('click', e => {
       const p = this.project; if (!p) return;
       const t = e.target as HTMLElement;
-      const clip = t.closest('.se-clip') as HTMLElement | null; if (clip) { p.setView(Number(clip.dataset.scene)); return; }
       const ev = t.closest('.se-ev') as HTMLElement | null; if (ev) { this.card = ev.dataset.id ?? null; p.setView(Number(ev.dataset.scene)); return; }
-      const tw = t.closest('[data-tw]') as HTMLElement | null; if (tw) { const k = tw.dataset.tw!; p.data.ui.open[k] = !p.data.ui.open[k]; p.saveQuiet(); this.renderTimeline(p); }
+      const clip = t.closest('.se-clip') as HTMLElement | null; if (clip) { p.setView(Number(clip.dataset.scene)); return; }
     });
     tl.addEventListener('dblclick', e => {
-      const clip = (e.target as HTMLElement).closest('.se-clip') as HTMLElement | null;
+      const t = e.target as HTMLElement;
+      if (t.closest('.se-ruler') && !t.closest('[data-gap]')) { this.tlFit(); return; }
+      const clip = t.closest('.se-clip') as HTMLElement | null;
       const s = clip && this.tl?.scenes[Number(clip.dataset.scene) - 1];
       if (s) void this.openScene(s);
     });
-    let dragKey: string | null = null;
-    tl.addEventListener('dragstart', e => { const g = (e.target as HTMLElement).closest('[data-grip]') as HTMLElement | null; if (!g) return; dragKey = g.dataset.grip!; e.dataTransfer?.setData('text/plain', dragKey); if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; g.closest('.se-section')?.addClass('is-dragging'); });
-    tl.addEventListener('dragover', e => { if (!dragKey) return; e.preventDefault(); tl.querySelectorAll('.is-drop-before').forEach(n => n.removeClass('is-drop-before')); (e.target as HTMLElement).closest('.se-section')?.addClass('is-drop-before'); });
-    tl.addEventListener('drop', e => {
-      e.preventDefault();
-      const p = this.project, t = ((e.target as HTMLElement).closest('.se-section') as HTMLElement | null)?.dataset.section;
-      if (p && dragKey && t && t !== dragKey) { const o = p.data.ui.order.filter(k => k !== dragKey); o.splice(o.indexOf(t), 0, dragKey); p.data.ui.order = o; p.saveQuiet(); }
-      dragKey = null; if (p) this.renderTimeline(p);
-    });
-    tl.addEventListener('dragend', () => { dragKey = null; const p = this.project; if (p) this.renderTimeline(p); });
     // Scenes: drop one on another and they happen at the same time; drop it between scenes and its chapter moves there.
-    // Events: drag a diamond to another scene to move the event there.
-    let held: { scene: boolean; el: HTMLElement; x: number; y: number; order: number; id: string; left: number; moved: boolean } | null = null;
-    let drop: { on?: number; before?: number; slot?: number } | null = null, swallowClick = false;
+    // Events: drag a diamond onto another scene to move the event there.
+    let held: { scene: boolean; el: HTMLElement; x: number; y: number; order: number; id: string; moved: boolean } | null = null;
+    let drop: { on?: number; before?: number } | null = null, swallowClick = false;
     tl.addEventListener('click', e => { if (swallowClick) { swallowClick = false; e.stopImmediatePropagation(); } }, { capture: true });
     tl.addEventListener('pointerdown', e => {
-      const el = e.button === 0 ? (e.target as HTMLElement).closest('.se-clip, .se-ev') as HTMLElement | null : null; if (!el) return;
-      held = { scene: el.hasClass('se-clip'), el, x: e.clientX, y: e.clientY, order: Number(el.dataset.scene), id: el.dataset.id ?? '', left: parseFloat(el.style.left), moved: false };
+      if (e.button !== 0) return;
+      const t = e.target as HTMLElement;
+      const el = (t.closest('.se-ev') ?? t.closest('.se-clip')) as HTMLElement | null; if (!el) return;
+      held = { scene: el.hasClass('se-clip'), el, x: e.clientX, y: e.clientY, order: Number(el.dataset.scene), id: el.dataset.id ?? '', moved: false };
     });
     const clearMarks = () => { tl.querySelectorAll('.se-dropline').forEach(n => n.remove()); tl.querySelectorAll('.is-drop-on').forEach(n => n.removeClass('is-drop-on')); };
     this.registerDomEvent(window, 'pointermove', e => {
       const h = held; if (!h) return;
       if (!h.moved) { if (Math.hypot(e.clientX - h.x, e.clientY - h.y) < 5) return; h.moved = true; h.el.addClass('is-dragging'); tl.addClass('is-moving'); }
       clearMarks(); drop = null;
-      if (!h.scene) {
-        const slot = this.slotAt(e.clientX); h.el.style.left = `${this.xOf(slot) + this.px / 2}px`; drop = { slot }; return;
-      }
-      h.el.style.left = `${h.left + e.clientX - h.x}px`;
+      h.el.style.translate = `${e.clientX - h.x}px ${e.clientY - h.y}px`;
       const under = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest('.se-clip') as HTMLElement | null;
-      if (under && under !== h.el) { under.addClass('is-drop-on'); drop = { on: Number(under.dataset.scene) }; return; }
+      if (under && under !== h.el && !(h.scene === false && Number(under.dataset.scene) === h.order)) { under.addClass('is-drop-on'); drop = { on: Number(under.dataset.scene) }; return; }
+      if (!h.scene) return;
       const x = e.clientX - tl.getBoundingClientRect().left, slots = this.tl?.t.slots ?? 0; let before = 0;
       for (let s = 0; s <= slots; s++) if (Math.abs(this.xOf(s) - x) < Math.abs(this.xOf(before) - x)) before = s;
-      const line = (h.el.parentElement ?? tl).createDiv('se-dropline'); line.style.left = `${this.xOf(before) - 1}px`;
+      const body = tl.querySelector('.se-tlbody'); if (!body) return;
+      const line = body.createDiv('se-dropline'); line.style.left = `${this.xOf(before) - 1}px`;
       drop = { before };
     });
     // Esc, or letting go outside the window, puts the dragged scene or event back where it was.
-    const cancel = () => { const h = held; held = null; drop = null; if (!h?.moved) return; clearMarks(); tl.removeClass('is-moving'); h.el.removeClass('is-dragging'); const p = this.project; if (p) this.renderTimeline(p); };
+    const cancel = () => { const h = held; held = null; drop = null; if (!h?.moved) return; clearMarks(); tl.removeClass('is-moving'); h.el.removeClass('is-dragging'); h.el.style.translate = ''; const p = this.project; if (p) this.renderTimeline(p); };
     this.registerDomEvent(document, 'keydown', e => { if (e.key === 'Escape' && held?.moved) { e.preventDefault(); e.stopPropagation(); cancel(); } }, { capture: true });
     this.registerDomEvent(window, 'blur', cancel);
     this.registerDomEvent(window, 'pointercancel', cancel);
     this.registerDomEvent(window, 'pointerup', () => {
       const h = held, to = drop; held = null; drop = null; if (!h?.moved) return;
       swallowClick = true; window.setTimeout(() => { swallowClick = false; }, 0);
-      clearMarks(); tl.removeClass('is-moving'); h.el.removeClass('is-dragging');
+      clearMarks(); tl.removeClass('is-moving'); h.el.removeClass('is-dragging'); h.el.style.translate = '';
       const p = this.project; if (!p) return;
-      const done = h.scene ? this.dropScene(p, h.order, to) : this.dropEvent(p, h.id, h.order, to?.slot);
+      const done = h.scene ? this.dropScene(p, h.order, to) : this.dropEvent(p, h.id, h.order, to?.on);
       void done.catch(err => new Notice(`Couldn't move it: ${(err as Error).message}`)).finally(() => this.renderTimeline(p));
     });
-    // On the ruler: drag to scrub, click a moment to edit it, drag a moment's edge to move where it starts.
+    // The ruler: press or drag to move the playhead; double-click to fit the whole story.
+    // Dates: click a name to edit it, drag a name or its left edge to change where it starts, drag a last date's right edge to end it.
+    // Time skips: drag sideways to widen (double-press: back to normal).
     let scrub = false, band: { id: string; x: number; el: HTMLElement } | null = null, gap: { m: M.Moment; x: number; g0: number } | null = null, lastGap: { id: string; at: number } | null = null;
     let edge: { id: string; el: HTMLElement; min: number; max: number; slot: number; start: number; off?: number } | null = null;
     let tail: { id: string; el: HTMLElement; min: number; max: number; slot: number; end: number } | null = null;
     tl.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
       const t = e.target as HTMLElement;
-      if (!t.closest('.se-ruler')) return;
-      tl.setPointerCapture(e.pointerId);
       const te = t.closest('[data-moment-end]') as HTMLElement | null;
       if (te && this.tl) {
+        tl.setPointerCapture(e.pointerId);
         const bands = this.tl.t.bands, b = bands.find(x => x.moment.id === te.dataset.momentEnd); if (!b) return;
         const next = bands.filter(x => x.start >= b.end).map(x => x.start).sort((x, y) => x - y)[0] ?? this.tl.t.slots;
         tail = { id: b.moment.id, el: te, min: b.start + 1, max: next, slot: b.end, end: b.end };
@@ -2098,21 +2320,22 @@ export class WorldView extends ItemView {
       }
       const ed = t.closest('.se-edge') as HTMLElement | null;
       if (ed && this.tl) {
+        tl.setPointerCapture(e.pointerId);
         const bands = this.tl.t.bands, i = bands.findIndex(x => x.moment.id === ed.dataset.moment); if (i < 0) return;
         edge = { id: bands[i].moment.id, el: ed, min: i > 0 ? bands[i - 1].start + 1 : 0, max: bands[i].end - 1, slot: bands[i].start, start: bands[i].start };
         ed.addClass('is-dragging'); e.preventDefault(); return;
       }
       const gp = t.closest('[data-gap]') as HTMLElement | null, gm = gp && this.project?.moment(gp.dataset.gap);
       if (gm) {
-        // Two quick presses on the gap put it back to its normal width.
+        tl.setPointerCapture(e.pointerId);
         const now = Date.now();
         if (lastGap?.id === gm.id && now - lastGap.at < 400) { lastGap = null; delete gm.gap; this.project?.saveQuiet(); const p = this.project; if (p) this.renderTimeline(p); return; }
         lastGap = { id: gm.id, at: now };
         gap = { m: gm, x: e.clientX, g0: gapOf(gm) }; e.preventDefault(); return;
       }
-      const bd = t.closest('.se-band') as HTMLElement | null;
-      if (bd) { band = { id: bd.dataset.moment!, x: e.clientX, el: bd }; return; }
-      scrub = true; this.goSlot(this.slotAt(e.clientX));
+      const dn = t.closest('.se-date-name') as HTMLElement | null;
+      if (dn) { tl.setPointerCapture(e.pointerId); band = { id: dn.dataset.moment!, x: e.clientX, el: dn }; return; }
+      if (t.closest('.se-ruler')) { tl.setPointerCapture(e.pointerId); scrub = true; this.goSlot(this.slotAt(e.clientX)); }
     });
     tl.addEventListener('pointermove', e => {
       if (gap) {
@@ -2123,23 +2346,22 @@ export class WorldView extends ItemView {
       if (tail) {
         const x = e.clientX - tl.getBoundingClientRect().left; let best = tail.min;
         for (let s = tail.min; s <= tail.max; s++) if (Math.abs(this.xOf(s) - x) < Math.abs(this.xOf(best) - x)) best = s;
-        tail.slot = best; tail.el.style.left = `${this.xOf(best) - 4}px`;
-        const last = this.startSceneAt(best - 1); tail.el.dataset.tip = last ? `ends after ${this.words.scene.toLowerCase()} ${last.order}` : '';
+        tail.slot = best; tail.el.style.left = `${this.xOf(best) - 6}px`;
+        const last = this.startSceneAt(best - 1); tail.el.dataset.tip = last ? `Ends After ${this.words.scene} ${last.order}` : '';
         return;
       }
       if (edge) {
         const x = e.clientX - tl.getBoundingClientRect().left - (edge.off ?? 0); let best = edge.min;
         for (let s = edge.min; s <= edge.max; s++) if (Math.abs(this.xOf(s) - x) < Math.abs(this.xOf(best) - x)) best = s;
         edge.slot = best; edge.el.style.left = `${this.xOf(best) - 4}px`;
-        const sc = this.startSceneAt(best); edge.el.dataset.tip = sc ? `starts at ${this.words.scene.toLowerCase()} ${sc.order}` : '';
+        const sc = this.startSceneAt(best); edge.el.dataset.tip = sc ? `Starts at ${this.words.scene} ${sc.order}` : '';
         return;
       }
       if (band && Math.abs(e.clientX - band.x) > 4) {
-        // Dragging a moment moves where it starts (the same as dragging its left edge).
+        // Dragging a date's name moves where it starts (the same as dragging its left edge).
         const ed = tl.querySelector(`.se-edge[data-moment="${CSS.escape(band.id)}"]`) as HTMLElement | null, bands = this.tl?.t.bands ?? [], i = bands.findIndex(x => x.moment.id === band!.id);
         const grabbedAt = band.x; band = null;
         if (ed && i >= 0) { edge = { id: bands[i].moment.id, el: ed, min: i > 0 ? bands[i - 1].start + 1 : 0, max: bands[i].end - 1, slot: bands[i].start, start: bands[i].start, off: grabbedAt - tl.getBoundingClientRect().left - this.xOf(bands[i].start) }; ed.addClass('is-dragging'); }
-        else scrub = true;
       }
       if (scrub) this.goSlot(this.slotAt(e.clientX));
     });
@@ -2169,21 +2391,22 @@ export class WorldView extends ItemView {
       band = null; scrub = false;
     });
     // Wheel: up/down by default, Shift = sideways (both native), Ctrl = zoom.
-    wrap.addEventListener('wheel', e => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); this.tlZoom(e.deltaY < 0 ? 1.25 : 0.8, e.clientX); }, { passive: false });
+    wrap.addEventListener('wheel', e => {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) { this.tlZoom(e.deltaY < 0 ? 1.25 : 0.8, e.clientX); return; }
+      wrap.scrollLeft += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    }, { passive: false });
     wrap.addEventListener('scroll', () => this.drawOverview());
-    let ovDrag = false;
-    ov.addEventListener('pointerdown', e => { ovDrag = true; ov.setPointerCapture(e.pointerId); this.goSlot(this.slotFromOverview(e.clientX)); });
-    ov.addEventListener('pointermove', e => { if (ovDrag) this.goSlot(this.slotFromOverview(e.clientX)); });
-    ov.addEventListener('pointerup', () => { ovDrag = false; });
-    ov.addEventListener('dblclick', () => this.tlFit());
-    // Hover a scene on the strip: what it is, and what happens in it.
-    ov.addEventListener('pointermove', e => {
-      const p = this.project, tl = this.tl; if (!p || !tl?.scenes.length || ovDrag) return;
-      const slot = this.slotFromOverview(e.clientX), here = tl.scenes.filter(x => x.slot === slot);
-      const evs = this.events(p).filter(ev => ev.slot === slot).map(ev => ev.p.name);
-      ov.title = here.map(sc => `${this.words.scene} ${sc.order} · ${sc.label}${sc.pov && p.get(sc.pov) ? ' · ' + p.get(sc.pov)!.name : ''}${sc.kind === 'flashback' ? ' (flashback)' : ''}`).join('\n')
-        + (evs.length ? `\n⚑ ${evs.join('\n⚑ ')}` : '') + '\n(click or drag to go there · double-click to fit the timeline)';
+    let fitRaf = 0;
+    const ro = new ResizeObserver(() => {
+      if (!this.pxFit || fitRaf) return;
+      fitRaf = requestAnimationFrame(() => {
+        fitRaf = 0;
+        const p = this.project; if (!p || !this.tl?.scenes.length) return;
+        const n = this.fitPx(); if (Math.abs(n - this.px) > 0.5) { this.px = n; this.renderTimeline(p); }
+      });
     });
+    ro.observe(wrap); this.register(() => ro.disconnect());
   }
 }
 
@@ -2210,7 +2433,7 @@ export class NameModal extends Modal {
   constructor(app: App, private heading: string, private value: string, private done: (v: string) => Promise<boolean>, private button = 'Rename') { super(app); }
   onOpen() {
     this.titleEl.setText(this.heading);
-    const input = this.contentEl.createEl('input', { cls: 'se-namefield' }); input.value = this.value;
+    const input = this.contentEl.createEl('input', { cls: 'se-namefield' }); input.type = 'text'; input.value = this.value;
     const ok = async () => { const v = input.value.trim(); if (v && await this.done(v)) this.close(); };
     input.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); void ok(); } };
     this.contentEl.createDiv('se-acts').createEl('button', { cls: 'mod-cta', text: this.button }).onclick = () => void ok();
@@ -2236,9 +2459,9 @@ class IconPicker extends Modal {
       }
     }
     const acts = c.createDiv('se-acts se-start');
-    const vault = acts.createEl('button', { cls: 'se-hb', text: 'An image from your vault…' });
+    const vault = acts.createEl('button', { cls: 'se-hb', text: 'An Image From Your Vault…' });
     vault.onclick = () => { this.close(); new ImagePicker(this.app, f => this.chosen(f.path)).open(); };
-    if (this.current) { const none = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'No icon (a plain dot)' }); none.onclick = () => { this.close(); this.chosen(null); }; }
+    if (this.current) { const none = acts.createEl('button', { cls: 'se-hb se-ghost', text: 'No Icon' }); none.onclick = () => { this.close(); this.chosen(null); }; }
   }
   onClose() { this.contentEl.empty(); }
 }

@@ -260,10 +260,10 @@ const files = {};
   });
   await step('Setup sections fold (and stay folded); the status bar folds away', async () => {
     await page.locator('.se-tab:has-text("Setup")').click(); await wait(200);
-    await page.locator('.se-fold:has-text("Connection types")').click(); await wait(100);
+    await page.locator('.se-fold:has-text("Connection Types")').click(); await wait(100);
     assert.equal(await page.isVisible('.se-fold-body.is-closed'), false);
-    assert.equal(await page.locator('.se-fold:has-text("Connection types") + .se-fold-body').getAttribute('class'), 'se-fold-body is-closed');
-    assert.deepEqual(await page.evaluate(() => plugin.activeProject().data.ui.setupClosed), ['Connection types']);
+    assert.equal(await page.locator('.se-fold:has-text("Connection Types") + .se-fold-body').getAttribute('class'), 'se-fold-body is-closed');
+    assert.deepEqual(await page.evaluate(() => plugin.activeProject().data.ui.setupClosed), ['Connection Types']);
     const h = await page.locator('.se-def-theme').first().locator('.se-meaning').boundingBox();
     assert.ok(h.height > 26, 'the meaning box grows to show its text');
     await page.locator('.se-tab:has-text("Pieces")').click(); await wait(100);

@@ -11,7 +11,7 @@ const files = {};
     await page.evaluate(() => plugin.openWorld()); await page.waitForTimeout(500);
     await page.evaluate(() => plugin.activeProject().setView(2)); await page.waitForTimeout(500);
     await page.locator('#side').screenshot({ path: path.join(out, `world-${name}.png`) });
-    if (name === 'wide') { await page.locator('.se-tab:has-text("Setup")').click(); await page.waitForTimeout(200); await page.locator('.se-fold:has-text("Piece types")').click(); await page.locator('.se-fold:has-text("Connection types")').click(); await page.waitForTimeout(200); await page.locator('.se-side').screenshot({ path: path.join(out, 'setup.png') }); }
+    if (name === 'wide') { await page.locator('.se-tab:has-text("Setup")').click(); await page.waitForTimeout(200); await page.locator('.se-fold:has-text("Piece Types")').click(); await page.locator('.se-fold:has-text("Connection Types")').click(); await page.waitForTimeout(200); await page.locator('.se-side').screenshot({ path: path.join(out, 'setup.png') }); }
     await page.close();
   }
   await b.close();

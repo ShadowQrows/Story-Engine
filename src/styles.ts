@@ -34,8 +34,8 @@ export function addStyleItems(app: App, menu: Menu, editor: Editor, project: Pro
   const now = styleOfLine(lines[start]), styles = project.data.look.styles;
   menu.addSeparator();
   for (const st of styles) menu.addItem(i => i.setTitle(`Style: ${st.name}`).setIcon('palette').setChecked(now === st.id).setSection('story-engine-style').onClick(() => setParagraphStyle(editor, start, st.id)));
-  menu.addItem(i => i.setTitle('New style…').setIcon('plus').setSection('story-engine-style').onClick(() => new NewStyleModal(app, project, st => setParagraphStyle(editor, start, st.id)).open()));
-  if (now) menu.addItem(i => i.setTitle('No style').setIcon('eraser').setSection('story-engine-style').onClick(() => setParagraphStyle(editor, start, null)));
+  menu.addItem(i => i.setTitle('New Style…').setIcon('plus').setSection('story-engine-style').onClick(() => new NewStyleModal(app, project, st => setParagraphStyle(editor, start, st.id)).open()));
+  if (now) menu.addItem(i => i.setTitle('No Style').setIcon('eraser').setSection('story-engine-style').onClick(() => setParagraphStyle(editor, start, null)));
 }
 
 /** Name it and pick its colours; the paragraph takes it right away. More settings live in the Aa strip. */
@@ -46,9 +46,9 @@ export class NewStyleModal extends Modal {
     this.titleEl.setText('New style');
     const c = this.contentEl; c.empty();
     const row = (label: string) => { const r = c.createDiv('se-style-row'); r.createSpan({ text: label }); return r; };
-    const name = row('Name').createEl('input'); name.placeholder = 'Epigraph';
-    const dark = row('Colour while writing').createEl('input'); dark.type = 'color'; dark.value = '#c9b98f';
-    const paper = row('Colour on paper and in exports').createEl('input'); paper.type = 'color'; paper.value = '#6b4f2a';
+    const name = row('Name').createEl('input'); name.type = 'text'; name.placeholder = 'Epigraph';
+    const dark = row('Colour While Writing').createEl('input'); dark.type = 'color'; dark.value = '#c9b98f';
+    const paper = row('Colour on Paper and in Exports').createEl('input'); paper.type = 'color'; paper.value = '#6b4f2a';
     const acts = c.createDiv('se-style-acts');
     const ok = acts.createEl('button', { cls: 'mod-cta', text: 'Create' });
     const go = () => {

@@ -7,4 +7,5 @@ import { setTooltip } from 'obsidian';
 /** How long the pointer rests on a button before its tip appears (milliseconds). */
 export const TIP_DELAY = 1500;
 
-export function tip(el: HTMLElement, text: string) { setTooltip(el, text, { delay: TIP_DELAY }); }
+/** A tip of several lines (separated by line breaks) shows them as lines, the first one as its title. */
+export function tip(el: HTMLElement, text: string) { setTooltip(el, text, { delay: TIP_DELAY, ...(text.includes('\n') ? { classes: ['se-tip-lines'] } : {}) }); }

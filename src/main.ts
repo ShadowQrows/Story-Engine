@@ -5,13 +5,13 @@ import { Capture } from './capture';
 import { storyEditorExtensions, refreshEditors } from './editor';
 import { WorldView, WORLD_VIEW, FolderPicker } from './world';
 import { classify, classesFor, gapBefore, LineKind, stylesOf, toLinePerParagraph } from './manuscript';
-import { applyVars, ensureLookbar, LookActions, lookVars, printCss, removeLookbar, styleRules, toggleLookbar } from './look';
+import { applyVars, ensureLookbar, LookActions, lookVars, SCREEN_SCALE, printCss, removeLookbar, styleRules, toggleLookbar } from './look';
 import { addStyleItems } from './styles';
 import { BookExportModal, copyChapterForWeb } from './export';
-import { placeCaret, removeChapters, startWriting, syncChapters } from './chapters';
+import { placeCaret, removeChapters, startWriting, syncChapters, syncZoom } from './chapters';
 
-interface Settings { active: string | null; sceneBars: boolean; follow: boolean; statusFolded: boolean; draftZoom: number }
-const DEFAULTS: Settings = { active: null, sceneBars: true, follow: true, statusFolded: false, draftZoom: 1 };
+interface Settings { active: string | null; sceneBars: boolean; follow: boolean; statusFolded: boolean; draftZoom: number; /** 2: draftZoom is measured from the larger 100% (SCREEN_SCALE) */ zoomBase?: number }
+const DEFAULTS: Settings = { active: null, sceneBars: true, follow: true, statusFolded: false, draftZoom: 1, zoomBase: 2 };
 
 export default class StoryEnginePlugin extends Plugin {
   settings: Settings = { ...DEFAULTS };
@@ -21,7 +21,10 @@ export default class StoryEnginePlugin extends Plugin {
   private scenesTimer: number | null = null;
 
   async onload() {
-    this.settings = { ...DEFAULTS, ...((await this.loadData()) ?? {}) };
+    const saved = (await this.loadData()) ?? {};
+    this.settings = { ...DEFAULTS, ...saved };
+    // 100% got larger (it's what 182% used to be): keep a saved zoom looking the same size.
+    if (saved.zoomBase !== 2 && typeof saved.draftZoom === 'number') { this.settings.draftZoom = Math.max(0.3, Math.round(saved.draftZoom / SCREEN_SCALE * 100) / 100); this.settings.zoomBase = 2; void this.saveSettings(); }
     this.capture = new Capture({
       app: this.app,
       openPiece: (p, id) => void this.showPiece(p, id),
@@ -41,7 +44,7 @@ export default class StoryEnginePlugin extends Plugin {
       sceneBars: () => this.settings.sceneBars,
       onSelect: (view, file, project, sel) => void this.capture.onSelect(project, file, sel.from, { text: sel.text, rect: sel.rect, file }),
       onNameClick: (view, file, project, id, at) => void this.capture.onNameClick(project, file, at.from, id, at.rect),
-      onSceneChip: (file, project, index, key, rect) => void this.capture.openScene(project, file, index, key, rect),
+      onSceneChip: (file, project, index, key, rect) => key === 'where' ? void this.showSceneOnMap(project, file, index) : void this.capture.openScene(project, file, index, key, rect),
       onCursor: (file, project, line) => this.followCursor(file, project, line),
       zoom: () => this.settings.draftZoom,
     }));
@@ -60,7 +63,7 @@ export default class StoryEnginePlugin extends Plugin {
     }, { capture: true, passive: false });
     this.addCommand({ id: 'draft-zoom-in', name: 'Zoom in on chapters', callback: () => this.setDraftZoom(this.settings.draftZoom * 1.1) });
     this.addCommand({ id: 'draft-zoom-out', name: 'Zoom out on chapters', callback: () => this.setDraftZoom(this.settings.draftZoom / 1.1) });
-    this.addCommand({ id: 'draft-zoom-reset', name: 'Reset chapter zoom', callback: () => this.setDraftZoom(1) });
+    this.addCommand({ id: 'draft-zoom-reset', name: 'Reset chapter zoom', callback: () => this.setDraftZoom(DEFAULTS.draftZoom) });
     // Right-click a paragraph in a chapter: Style → …
     this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, info) => {
       const f = info.file, p = f && this.projectFor(f.path);
@@ -158,7 +161,7 @@ export default class StoryEnginePlugin extends Plugin {
       void this.capture.onSelect(p, f, editor.posToOffset(editor.getCursor('from')), { text: sel, rect: this.cursorRect(), file: f });
     } });
     this.addCommand({ id: 'new-story', name: 'Set up a story', callback: () => this.newStory() });
-    this.addCommand({ id: 'new-chapter', name: 'New chapter', callback: () => this.newChapter() });
+    this.addCommand({ id: 'new-chapter', name: 'New Chapter', callback: () => this.newChapter() });
     this.addCommand({ id: 'toggle-manuscript', name: 'Turn book look on/off for this note', checkCallback: checking => {
       const f = this.app.workspace.getActiveViewOfType(MarkdownView)?.file; if (!f) return false;
       if (!checking) void this.toggleManuscript(f).then(on => new Notice(on ? 'Book look on.' : 'Book look off.'));
@@ -288,6 +291,7 @@ export default class StoryEnginePlugin extends Plugin {
       const f = v.file, p = f && this.projectFor(f.path);
       if (f && p?.isChapter(f)) {
         ensureLookbar(v, p, this.lookActions(p)); this.addHeaderButtons(v, p); syncChapters(v, p, this.chaptersOpen, () => { this.chaptersOpen = !this.chaptersOpen; this.applyLooks(); });
+        syncZoom(v, this.settings.draftZoom, () => this.setDraftZoom(1));
         applyVars(v.containerEl, lookVars(p.data.look, true, this.settings.draftZoom));
         v.containerEl.toggleClass('se-paper', p.data.look.paper);
         v.containerEl.toggleClass('se-no-dropcap', p.data.look.dropcap === false);
@@ -364,22 +368,14 @@ export default class StoryEnginePlugin extends Plugin {
     }, 250);
   }
   private zoomSave: number | null = null;
-  /** Chapter zoom (screen only, this computer): 50%–300%. Shows the new size for a moment where you zoomed. */
-  setDraftZoom(z: number, where?: HTMLElement | null) {
-    const next = Math.min(3, Math.max(0.5, Math.round(z * 100) / 100));
+  /** Chapter zoom (screen only, this computer): 30%–300%. Shows the new size for a moment where you zoomed. */
+  setDraftZoom(z: number, _where?: HTMLElement | null) {
+    const next = Math.min(3, Math.max(0.3, Math.round(z * 100) / 100));
     if (next === this.settings.draftZoom) return;
     this.settings.draftZoom = next;
     this.applyLooks(); refreshEditors();
     if (this.zoomSave !== null) window.clearTimeout(this.zoomSave);
     this.zoomSave = window.setTimeout(() => { this.zoomSave = null; void this.saveSettings(); }, 400);
-    const host = where ?? this.app.workspace.getActiveViewOfType(MarkdownView)?.containerEl;
-    if (host) {
-      let toast = host.querySelector(':scope > .se-zoom-toast') as HTMLElement | null;
-      if (!toast) toast = host.createDiv('se-zoom-toast');
-      toast.setText(`${Math.round(next * 100)}%`); toast.removeClass('is-gone');
-      window.clearTimeout(Number(toast.dataset.t ?? 0));
-      toast.dataset.t = String(window.setTimeout(() => toast!.addClass('is-gone'), 900));
-    }
   }
   private refreshTimer: number | null = null;
   /** Re-draw underlines and scene bars in open chapters (batched: many changes can arrive at once). */
@@ -428,7 +424,7 @@ export default class StoryEnginePlugin extends Plugin {
   newChapter() {
     const p = this.activeProject();
     if (!p) { this.newStory(); return; }
-    new PromptModal(this.app, 'New chapter', 'Chapter title', async title => {
+    new PromptModal(this.app, 'New Chapter', 'Chapter title', async title => {
       const f = await p.createChapter(title);
       const leaf = this.app.workspace.getLeaf(false);
       await leaf.openFile(f);
@@ -463,6 +459,16 @@ export default class StoryEnginePlugin extends Plugin {
     await this.app.workspace.revealLeaf(leaf);
     return leaf.view instanceof WorldView ? leaf.view : null;
   }
+  /** “Where” in a scene bar: the World view on that scene, zoomed to where its POV character is (as the line under the map does). */
+  private async showSceneOnMap(p: Project, file: TFile, index: number) {
+    if (this.settings.active !== p.folder) this.setActive(p.folder);
+    const scene = (await p.timeline()).scenes.find(s => s.file.path === file.path && s.index === index);
+    if (scene) p.setView(scene.order);
+    const leaf = this.app.workspace.getLeavesOfType(WORLD_VIEW)[0];
+    const view = leaf?.view instanceof WorldView ? leaf.view : await this.openWorld();
+    if (leaf) await this.app.workspace.revealLeaf(leaf);
+    window.setTimeout(() => view?.focusPov(), 120);
+  }
   private async showPiece(p: Project, id: string) {
     if (this.settings.active !== p.folder) this.setActive(p.folder);
     const leaf = this.app.workspace.getLeavesOfType(WORLD_VIEW)[0];
@@ -491,7 +497,7 @@ class ConfirmModal extends Modal {
     this.titleEl.setText(this.heading);
     this.contentEl.createEl('p', { text: this.body });
     const row = this.contentEl.createDiv('se-acts');
-    row.createEl('button', { text: 'Not now' }).onclick = () => this.close();
+    row.createEl('button', { text: 'Not Now' }).onclick = () => this.close();
     row.createEl('button', { cls: 'mod-cta', text: this.ok }).onclick = async () => { await this.run(); this.close(); };
   }
   onClose() { this.contentEl.empty(); }
@@ -500,7 +506,7 @@ class PromptModal extends Modal {
   constructor(app: App, private heading: string, private placeholder: string, private done: (v: string) => Promise<void>) { super(app); }
   onOpen() {
     this.titleEl.setText(this.heading);
-    const input = this.contentEl.createEl('input', { cls: 'se-namefield' }); input.placeholder = this.placeholder;
+    const input = this.contentEl.createEl('input', { cls: 'se-namefield' }); input.type = 'text'; input.placeholder = this.placeholder;
     const ok = async () => { const v = input.value.trim(); if (!v) return; await this.done(v); this.close(); };
     input.onkeydown = e => { if (e.key === 'Enter') void ok(); };
     const row = this.contentEl.createDiv('se-acts');
@@ -517,7 +523,7 @@ class SettingsTab extends PluginSettingTab {
     new Setting(c).setName('Scene bars').setDesc('Show the POV · When · Where bar at the start of each scene in your chapters.')
       .addToggle(t => t.setValue(this.plugin.settings.sceneBars).onChange(async v => { this.plugin.settings.sceneBars = v; await this.plugin.saveSettings(); refreshEditors(); }));
     new Setting(c).setName('Stories').setDesc(this.plugin.projects.size ? [...this.plugin.projects.values()].map(p => p.name).join(', ') : 'None yet.')
-      .addButton(b => b.setButtonText('Set up a story…').onClick(() => this.plugin.newStory()));
+      .addButton(b => b.setButtonText('Set Up a Story…').onClick(() => this.plugin.newStory()));
     new Setting(c).setName('Follow cursor').setDesc('The World view\'s timeline follows the scene your cursor is in.')
       .addToggle(t => t.setValue(this.plugin.settings.follow).onChange(async v => { this.plugin.settings.follow = v; await this.plugin.saveSettings(); this.plugin.changed(); }));
     new Setting(c).setName('Capture hotkey').setDesc('Highlighting text opens the capture box automatically. You can also give “Story Engine: Add selection to world” a hotkey in Settings → Hotkeys.');

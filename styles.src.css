@@ -199,18 +199,19 @@ body.se-awaiting .se-name { cursor: copy; }
 .se-look-aa.is-active, .se-chapters-btn.is-active { color: var(--interactive-accent) !important; background: var(--background-modifier-hover); }
 .se-look-panel { display: none; }
 /* Open, the strip sits above the text and pushes it down instead of covering it. */
-.se-lookbar.is-open { display: flex; position: relative; flex: none; padding: 8px 14px; border-bottom: 1px solid var(--background-modifier-border); background: var(--background-primary); }
+.se-lookbar.is-open { display: flex; position: relative; flex: none; max-height: 60%; overflow-y: auto; padding: 8px 14px; border-bottom: 1px solid var(--background-modifier-border); background: var(--background-primary); }
 .se-lookbar.is-open .se-look-panel { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; gap: 10px 18px; align-items: flex-start; font-size: var(--font-ui-smaller); }
 .view-content:has(> .se-lookbar.is-open) { display: flex !important; flex-direction: column; }
 .view-content:has(> .se-lookbar.is-open) > :is(.markdown-source-view, .markdown-reading-view) { flex: 1 1 auto; min-height: 0; height: auto !important; }
-.se-look-group { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.se-look-group { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; min-width: 0; max-width: 100%; }
+.se-look-set { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; max-width: 100%; }
 .se-look-h { width: 100%; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-faint); }
 .se-look-f { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); }
 .se-look-f input[type=number] { width: 64px; height: 26px; font-size: var(--font-ui-smaller); }
 .se-look-font input { width: 160px; height: 26px; font-size: var(--font-ui-smaller); }
 .se-look-f input[type=color] { width: 34px; height: 24px; padding: 1px; }
 .se-look-u { color: var(--text-faint); }
-.se-look-reset { height: 22px !important; padding: 0 6px !important; font-size: 11px !important; }
+.se-look-reset { height: 26px !important; padding: 0 10px !important; font-size: var(--font-ui-smaller) !important; }
 .se-look-acts { width: 100%; display: flex; justify-content: flex-end; gap: 6px; }
 .se-look-acts button { height: 26px !important; font-size: var(--font-ui-smaller) !important; }
 @media print { .se-lookbar { display: none !important; } }
@@ -480,7 +481,7 @@ body.se-awaiting .se-name { cursor: copy; }
 .se-stack:hover .se-stack-n { background: var(--interactive-accent); }
 /* Places with an inside map */
 .se-pin.is-door i { box-shadow: 0 0 0 3px #ffffff40, 0 1px 5px #000a; }
-.se-pin.is-door { cursor: zoom-in; }
+.se-pin.is-door { cursor: pointer; }
 .se-pin.is-under-roof, .se-tok.is-under-roof { visibility: hidden; }
 .se-map.is-switching .se-stage { animation: se-mapin .25s ease-out; }
 @keyframes se-mapin { from { opacity: .3; } to { opacity: 1; } }
@@ -567,7 +568,7 @@ body.se-awaiting .se-name { cursor: copy; }
 .se-overview { height: 13px !important; margin: 0 8px 7px !important; }
 /* The caption under the map: double-click to focus on the POV's place. */
 .se-maptag { pointer-events: auto; }
-.se-maptag.is-focusable { cursor: zoom-in; }
+.se-maptag.is-focusable { cursor: pointer; }
 .se-maptag .se-pv { gap: 4px; }
 .se-maptag .se-pv b { color: var(--se-gold); }
 .se-maptag .se-jump { color: var(--se-gold); }
@@ -606,7 +607,7 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 .se-tok.is-folded { display: none; }
 .se-tok.is-folded.is-peek { display: flex; opacity: .92; z-index: 6; }
 .se-pin.is-folded-pin { visibility: hidden; }
-.se-group { position: absolute; z-index: 4; display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -50%) scale(var(--zinv)); cursor: zoom-in; user-select: none; transition: opacity .15s; }
+.se-group { position: absolute; z-index: 4; display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -50%) scale(var(--zinv)); cursor: pointer; user-select: none; transition: opacity .15s; }
 .se-group-icon { width: 30px; height: 30px; background: center / contain no-repeat; filter: drop-shadow(0 2px 4px #000c); }
 .se-group-icon.is-default { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M4 28V12h4v4h4v-6h3v-4h2v4h3v6h4v-4h4v16z' fill='%23d8d2c2' stroke='%23222' stroke-width='1.5' stroke-linejoin='round'/><rect x='14' y='20' width='4' height='8' fill='%23333'/></svg>"); }
 .se-group-label { margin-top: 1px; font-size: 11px; font-weight: 700; color: #fff; white-space: nowrap; text-shadow: 0 1px 3px #000, 0 0 8px #000; }
@@ -684,7 +685,7 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 .se-nav-b { pointer-events: auto; background: transparent !important; border: none !important; box-shadow: none !important; color: #f4f1ea !important; width: 22px; height: 22px !important; padding: 0 !important; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; opacity: .8; filter: drop-shadow(0 1px 2px #000); }
 .se-nav-b:hover { opacity: 1; background: #0005 !important; }
 .se-nav-b svg { width: 14px; height: 14px; }
-.se-map .se-zoom-pct { position: absolute; left: 8px; top: 6px; z-index: 9; min-width: 0; font-size: 11px; color: #f4f1ea; opacity: .75; text-shadow: 0 1px 3px #000, 0 0 6px #000; cursor: zoom-out; user-select: none; }
+.se-map .se-zoom-pct { position: absolute; left: 8px; top: 6px; z-index: 9; min-width: 0; font-size: 11px; color: #f4f1ea; opacity: .75; text-shadow: 0 1px 3px #000, 0 0 6px #000; cursor: pointer; user-select: none; }
 .se-map .se-zoom-pct:hover { opacity: 1; }
 /* “+ New” at the top right of the catalog */
 .se-new-piece { margin-left: auto; height: 20px !important; padding: 0 8px !important; font-size: 11px !important; letter-spacing: 0; text-transform: none; border-radius: 6px !important; box-shadow: none !important; background: var(--background-secondary) !important; border: 1px solid var(--background-modifier-border) !important; color: var(--text-muted) !important; }
@@ -734,7 +735,9 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 /* Paragraph styles */
 .manuscript .se-st { transition: color .15s; }
 .se-look-styles { flex-direction: column; align-items: stretch !important; }
-.se-look-style { display: flex; align-items: center; gap: 6px; }
+.se-look-style { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.se-look-style > .se-look-set { gap: 6px; }
+.se-look-slist { display: flex; flex-direction: column; gap: 6px; max-height: 172px; overflow-y: auto; padding-right: 4px; }
 .se-look-style input.se-look-sname { width: 130px; height: 26px; font-size: var(--font-ui-smaller); }
 .se-look-style input[type=color] { width: 30px; height: 24px; padding: 1px; }
 .se-look-style .se-look-si { width: 26px; height: 24px !important; padding: 0 !important; font-style: italic; font-family: Georgia, serif; }
@@ -742,7 +745,6 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 .se-look-style select { height: 26px; font-size: var(--font-ui-smaller); }
 .se-look-style input.se-look-ss { width: 56px; height: 26px; font-size: var(--font-ui-smaller); }
 .se-look-sdel.is-sure { color: var(--text-error) !important; }
-.se-look-skey { font-size: 10.5px; color: var(--text-faint); }
 .se-look-ex { height: 26px !important; font-size: var(--font-ui-smaller) !important; }
 .se-style-modal, .se-export-modal { width: min(420px, 92vw); }
 .se-style-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0; }
@@ -759,7 +761,7 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 .se-look-sp input.se-look-ss { width: 50px; }
 
 /* 2.10.1: the Chapters list follows Paper too */
-.se-paper .se-chapters, .se-paper .se-chapters-btn {
+.se-paper .se-chapters, .se-paper .se-chapters-btn, .se-paper .se-page-zoom {
   --background-primary: var(--se-paper-bg, #f3ecdc);
   --background-modifier-hover: color-mix(in srgb, var(--se-paper-text, #231f1a) 9%, transparent);
   --text-normal: var(--se-paper-text, #231f1a);
@@ -801,3 +803,201 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 .se-no-dropcap .manuscript .mm-dropcap::first-letter, .se-no-dropcap.manuscript .mm-dropcap::first-letter { float: none; font-family: inherit; font-size: inherit; font-style: inherit; font-weight: inherit; line-height: inherit; margin: 0; color: inherit; }
 .se-look-check { display: flex; align-items: center; gap: 6px; }
 .se-look-f.is-off { opacity: .45; }
+
+/* Chapter zoom, next to the Chapters button: a click goes back to 100% */
+.se-page-zoom { position: absolute; left: 50px; top: 14px; z-index: 30; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-muted); background: var(--background-modifier-hover); cursor: pointer; user-select: none; }
+.se-page-zoom:hover { color: var(--text-normal); }
+@media print { .se-page-zoom { display: none !important; } }
+
+/* Narrow World pane: the side column gives way (at most half), and the map's buttons wrap instead of running into Pieces/Setup */
+.se-side { max-width: 50%; min-width: 200px; }
+.se-mapcol { container-type: inline-size; container-name: se-mapcol; overflow: hidden; }
+@container se-mapcol (max-width: 330px) {
+  .se-hud { display: flex !important; flex-wrap: wrap; justify-content: space-between; }
+  .se-hgrp { flex-wrap: wrap; }
+}
+
+/* Consistent controls: one height per row, rounded corners on every box */
+.se-look-font input, .se-look-style input.se-look-sname, .se-q { border-radius: var(--input-radius, 5px) !important; }
+.se-look-style .se-look-si { height: 26px !important; }
+.se-story-pick { height: 28px !important; font-size: var(--font-ui-small); }
+.se-hb.is-icon { height: 28px !important; min-width: 28px; padding: 0 !important; display: inline-flex !important; align-items: center; justify-content: center; }
+.se-tab, .se-q { height: 28px !important; }
+.se-look-slist { width: max-content; max-width: 100%; box-sizing: content-box; padding-right: 10px; }
+.se-look-panel { container-type: inline-size; container-name: se-look; }
+.se-look-style { flex-wrap: nowrap; }
+@container se-look (max-width: 640px) { .se-look-style { flex-wrap: wrap; } }
+.se-look-style > .se-look-set { flex-shrink: 0; flex-wrap: nowrap; }
+@container se-look (max-width: 640px) { .se-look-style > .se-look-set { flex-shrink: 1; flex-wrap: wrap; } }
+/* Journey stops: a long name is cut short with "…" instead of pushing the × out of the card */
+.se-jl button { min-width: 0; }
+.se-jl button > :not(.se-jl-x) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.se-jl-x { flex: none; }
+/* Chapter list over the page when the pane is too narrow to push the page aside */
+.se-chapters.is-floating { bottom: auto; max-height: calc(100% - 60px); }
+.se-chapters.is-floating .se-ch-inner { background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 10px; box-shadow: 0 8px 24px #0006; padding: 6px; }
+/* Export window: every field the same width */
+.se-export-modal .se-style-row > input[type=text], .se-export-modal .se-style-row > select { width: 260px; flex: none; }
+/* Setup rows in a narrow side column: the dropdowns give way before the names do, and the × stays in view */
+.se-def select.se-beh { flex: 0 1 112px; min-width: 76px; }
+.se-def select.se-dash, .se-def select.se-arrow { flex: 0 1 56px; min-width: 46px; }
+.se-def-name { min-width: 72px; }
+.se-def > * { min-width: 0; }
+.se-def > .se-x, .se-def > input[type=color], .se-def > svg, .se-def > .se-count { flex: none; }
+.se-def > .se-def-name { min-width: 72px; }
+.se-side { container-type: inline-size; container-name: se-side; }
+@container se-side (max-width: 330px) { .se-def-conn { flex-wrap: wrap; row-gap: 4px; } .se-def-conn > .se-def-name { flex-basis: calc(100% - 80px); } }
+
+/* Ruler: tick marks along the top (under the playhead's triangle), moments below them so their names stay readable */
+.se-ruler { height: 42px; }
+.se-tick { top: 0; bottom: auto; }
+.se-band, .se-edge { top: 9px; }
+.se-edge.is-dragging { top: 0; height: 42px; }
+.se-edge.is-dragging::before { top: 27px; }
+.se-skiplabel { top: 28px; }
+.se-skipline { top: 42px; }
+/* Style picker: the name box with the list of styles under a faint arrow on its left */
+.se-look-spick { position: relative; display: flex; align-items: center; }
+.se-look-spick .se-look-sname { padding-left: 26px !important; width: 170px !important; }
+.se-look-sarrow { position: absolute; left: 3px; z-index: 1; width: 22px; height: 22px !important; padding: 0 !important; background: transparent !important; box-shadow: none !important; border: 0 !important; color: var(--text-muted); opacity: .6; display: inline-flex !important; align-items: center; justify-content: center; }
+.se-look-sarrow:hover { opacity: 1; background: var(--background-modifier-hover) !important; }
+.se-look-sarrow svg { width: 14px; height: 14px; }
+
+/* Setup → Maps: where each map is, readable; buttons in fixed slots so they line up row to row */
+.se-maprow { flex-wrap: wrap; align-items: center; row-gap: 6px; }
+.se-maprow-info { flex: 1 1 150px; }
+.se-maprow .se-map-inside { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.se-maprow-acts { margin-left: auto; }
+.se-maprow-acts .se-hb { min-width: 66px; justify-content: center; }
+.se-maprow-acts .se-x { width: 24px; }
+.se-maprow-acts .is-empty-slot { visibility: hidden; }
+/* A setting: label on the left, its field on the right */
+.se-setting { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0 4px; font-size: var(--font-ui-small); }
+.se-setting > span:first-child { color: var(--text-normal); }
+.se-setting-field { display: flex; align-items: center; gap: 5px; }
+.se-setting-field input { width: 72px; height: 26px; font-size: var(--font-ui-smaller); }
+.se-setting-value { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* Themes & Rules: the name reads as a heading (a box only on hover/typing), the meaning sits in its field below */
+.se-def-theme .se-def-name { background: transparent !important; border-color: transparent !important; box-shadow: none !important; font-weight: 600; font-size: var(--font-ui-medium) !important; padding-left: 4px; }
+.se-def-theme .se-def-name:hover, .se-def-theme .se-def-name:focus { background: var(--background-modifier-form-field) !important; border-color: var(--background-modifier-border) !important; }
+.se-def-theme .se-meaning { background: var(--background-secondary) !important; color: var(--text-muted); }
+.se-def-theme + .se-def-theme { margin-top: 6px; }
+/* Scene bar "Where": a link to the map, not a pill like POV and When (those open a box to change them) */
+.se-where-link { display: inline-flex; align-items: center; padding: 2px 6px; font-size: var(--font-ui-smaller); color: var(--text-muted); cursor: pointer; user-select: none; text-decoration: underline dotted transparent; text-underline-offset: 3px; }
+.se-where-link:hover { color: var(--text-normal); text-decoration-color: currentColor; }
+
+/* ───────── Timeline (rebuilt): toolbar column · ruler · dates holding scenes holding events · overview ribbon ───────── */
+.se-dock { flex-direction: row !important; }
+.se-tools { flex: none; width: 40px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 0; border-right: 1px solid var(--background-modifier-border); background: var(--background-secondary); }
+.se-tools .se-spacer { flex: 1; }
+.se-tool { width: 28px; height: 28px !important; padding: 0 !important; display: inline-flex !important; align-items: center; justify-content: center; border-radius: 7px !important; background: transparent !important; box-shadow: none !important; color: var(--text-faint) !important; }
+.se-tool svg { width: 16px; height: 16px; }
+.se-tool:hover { background: var(--background-modifier-hover) !important; color: var(--text-muted) !important; }
+.se-tool.is-on { background: color-mix(in srgb, var(--interactive-accent) 22%, transparent) !important; color: var(--interactive-accent) !important; }
+.se-tlmain { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.se-focusbar { flex: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px 2px; }
+.se-focuschip { height: 22px !important; padding: 0 6px 0 10px !important; border-radius: 999px !important; font-size: var(--font-ui-smaller) !important; background: color-mix(in srgb, var(--c) 28%, var(--background-secondary)) !important; border: 1px solid color-mix(in srgb, var(--c) 70%, transparent) !important; box-shadow: none !important; color: var(--text-normal) !important; gap: 6px; }
+.se-focusx { color: var(--text-muted); }
+.se-focuschip:hover .se-focusx { color: var(--text-error); }
+.se-tlwrap { border-top: none !important; }
+.se-tlc { display: flex; flex-direction: column; min-height: 100%; }
+.se-ruler { height: 20px !important; flex: none; }
+.se-tick { top: 0 !important; bottom: auto !important; height: 5px; }
+.se-skiplabel { top: 4px !important; }
+.se-ph-head { position: absolute; top: 0; z-index: 7; width: 0; height: 0; transform: translateX(-50%); border: 7px solid transparent; border-top: 9px solid var(--se-gold); border-bottom: 0; pointer-events: none; }
+.se-tlbody { position: relative; flex: 1 1 auto; }
+.se-date { position: absolute; top: 2px; bottom: 2px; z-index: 0; border-radius: 8px; background: color-mix(in srgb, var(--interactive-accent) 9%, var(--background-primary)); border: 1px solid color-mix(in srgb, var(--interactive-accent) 22%, transparent); }
+.se-date-name { height: 22px; line-height: 22px; padding: 0 8px; font-size: var(--font-ui-smaller); font-weight: 600; color: var(--text-normal); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; border-radius: 8px 8px 0 0; }
+.se-date-name:hover { background: color-mix(in srgb, var(--interactive-accent) 16%, transparent); }
+.se-edge { top: 2px !important; height: 22px !important; z-index: 4; }
+.se-edge.is-dragging { top: 2px !important; height: 22px !important; }
+.se-edge.is-dragging::before { top: 24px !important; }
+.se-skip { top: 2px !important; bottom: 2px !important; border-radius: 6px; }
+.se-skipline { display: none; }
+.se-slot { position: absolute; bottom: 4px; z-index: 2; display: flex; flex-direction: column; gap: 3px; }
+.se-tlbody .se-clip { position: relative !important; left: auto !important; top: auto !important; width: auto !important; height: auto !important; flex: 1 1 0; min-height: 30px; border-radius: 6px; overflow: hidden; color: var(--text-normal); font-weight: 400; background: color-mix(in srgb, var(--c) 22%, var(--background-secondary)); border: 1px solid color-mix(in srgb, var(--c) 55%, transparent); box-shadow: none; transition: opacity .15s; }
+.se-tlbody .se-clip:hover { filter: brightness(1.15); }
+.se-tlbody .se-clip.is-cur { background: color-mix(in srgb, var(--c) 42%, var(--background-secondary)); border: 2px solid var(--c); color: var(--text-normal); box-shadow: none; }
+.se-clip-h { position: absolute; top: 3px; left: 6px; right: 4px; display: flex; gap: 6px; align-items: baseline; font-size: 11px; white-space: nowrap; overflow: hidden; pointer-events: none; }
+.se-clip-h b { font-weight: 600; }
+.se-clip-h span { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
+.se-clip-evs { position: absolute; inset: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; align-content: center; gap: 7px; padding: 14px 4px 10px; pointer-events: none; }
+.se-tlbody .se-ev { position: relative; left: auto; top: auto; width: 10px; height: 10px; transform: rotate(45deg); pointer-events: auto; flex: none; }
+.se-tlbody .se-ev:hover::after { display: none; }
+.se-tlbody .se-ev:hover { filter: brightness(1.25); }
+.se-cast { position: absolute; left: 6px; bottom: 4px; display: flex; align-items: center; gap: 3px; font-size: 9.5px; color: var(--text-muted); }
+.se-cast i { width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
+.se-tlbody .se-clip.is-dim { opacity: .22; }
+.se-tlbody .se-clip.is-some { opacity: .6; }
+.se-tlbody .se-clip.is-together { box-shadow: 0 0 0 2px var(--se-gold); }
+.se-tlbody .se-playhead { top: 0; bottom: 0; height: auto !important; width: 1px; z-index: 1; opacity: .45; box-shadow: none; }
+.se-tlbody .se-playhead::before { display: none; }
+.se-tlbody .se-dropline { z-index: 5; }
+.se-tlbody .se-clip.is-dragging, .se-tlbody .se-ev.is-dragging { pointer-events: none; z-index: 10; opacity: .85; }
+.se-tlbody .se-clip.is-drop-on { box-shadow: 0 0 0 2px var(--interactive-accent); }
+.se-overview { height: 6px !important; margin: 4px 10px 7px !important; border-radius: 3px; pointer-events: none; cursor: default; flex: none; }
+.se-overview canvas { border-radius: 3px; }
+.se-ov-window { border: none !important; border-radius: 3px; background: color-mix(in srgb, var(--text-normal) 22%, transparent) !important; mix-blend-mode: screen; }
+.se-ov-head { top: -2px !important; bottom: -2px !important; width: 2px !important; margin-left: -1px !important; box-shadow: none !important; }
+.se-dock.is-small .se-tlbody { display: none; }
+.se-dock.is-small .se-tlwrap { height: 20px !important; }
+.se-dock.is-small .se-tools { display: none; }
+
+/* Timeline, round 2 */
+.tooltip.se-tip-lines { white-space: pre-line; text-align: left; }
+.tooltip.se-tip-lines::first-line { font-weight: 600; }
+.se-ruler { border-bottom: none !important; }
+.se-tlwrap { scrollbar-width: none; }
+.se-tlwrap::-webkit-scrollbar { display: none; }
+/* Squeezing the dock shrinks everything smoothly down to the ruler; nothing snaps or disappears all at once */
+.se-tlbody { overflow: hidden; }
+.se-tlbody .se-clip { min-height: 0 !important; }
+.se-tools { overflow: hidden; }
+.se-dock.is-small .se-tlbody { display: block !important; }
+.se-dock.is-small .se-tlwrap { height: auto !important; flex: 1 1 auto !important; overflow: hidden !important; }
+.se-dock.is-small .se-tools { display: flex !important; }
+/* The playhead's line runs over the scenes and stops where they stop */
+.se-tlbody .se-playhead { top: 0 !important; bottom: 4px !important; z-index: 4 !important; opacity: .85 !important; width: 1px; pointer-events: none; }
+/* Scenes switched off: their boxes go, their events stay where they happen */
+.se-tlbody.is-bare .se-clip { background: transparent !important; border-color: transparent !important; }
+.se-tlbody.is-bare .se-clip.is-cur { border-color: transparent !important; }
+/* Toolbar: zoom on top, then Find, then the layers */
+.se-tl-zoom { width: 34px; height: 20px !important; padding: 0 !important; background: transparent !important; box-shadow: none !important; font-size: 10px !important; color: var(--text-muted) !important; font-variant-numeric: tabular-nums; border-radius: 5px !important; }
+.se-tl-zoom:hover { color: var(--text-normal) !important; background: var(--background-modifier-hover) !important; }
+.se-tools-sep { width: 20px; height: 1px; background: var(--background-modifier-border); margin: 2px 0; flex: none; }
+/* Find on Timeline */
+.se-findbox { position: absolute; z-index: 40; width: 250px; padding: 8px; display: flex; flex-direction: column; gap: 6px; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 10px; box-shadow: 0 10px 30px #0008; }
+.se-findbox input { width: 100%; height: 28px; }
+.se-find-results, .se-find-shown { display: flex; flex-direction: column; gap: 2px; }
+.se-find-hit { display: flex !important; align-items: center; gap: 8px; justify-content: flex-start !important; height: 26px !important; padding: 0 8px !important; background: transparent !important; box-shadow: none !important; font-size: var(--font-ui-small) !important; }
+.se-find-hit:hover { background: var(--background-modifier-hover) !important; }
+.se-find-none { font-size: var(--font-ui-smaller); color: var(--text-faint); padding: 2px 8px; }
+.se-find-h { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-faint); margin-top: 4px; padding: 0 2px; }
+.se-find-row { display: flex; align-items: center; gap: 8px; padding: 0 2px 0 8px; height: 24px; font-size: var(--font-ui-small); }
+.se-find-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.se-find-mark { width: 8px; height: 8px; border-radius: 50%; background: var(--c); flex: none; }
+.se-find-mark.is-place { border-radius: 2px; }
+.se-find-clear { align-self: flex-end; margin-top: 4px; }
+/* What's being found, on the ruler (look-only) */
+.se-pills { position: sticky; left: 4px; top: 2px; z-index: 8; display: inline-flex; gap: 4px; height: 16px; pointer-events: none; }
+.se-pill { display: inline-flex; align-items: center; gap: 4px; height: 16px; padding: 0 7px; border-radius: 999px; font-size: 10.5px; white-space: nowrap; color: var(--text-normal); background: color-mix(in srgb, var(--c) 30%, var(--background-secondary)); border: 1px solid color-mix(in srgb, var(--c) 60%, transparent); }
+.se-pill i { width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+.se-pill.is-place i { border-radius: 1px; }
+/* Setup → Timeline: your words for scenes and dates, as clickable labels */
+.se-words { display: flex; gap: 6px; padding: 2px 0 8px; }
+.se-words .se-word { height: 26px !important; padding: 0 12px !important; font-size: var(--font-ui-small) !important; font-weight: 600; background: var(--background-modifier-form-field) !important; border: 1px solid var(--background-modifier-border) !important; box-shadow: none !important; color: var(--text-normal) !important; border-radius: 6px !important; }
+.se-words .se-word:hover { border-color: var(--interactive-accent) !important; }
+/* Inside map that opens while a dragged piece rests over its building */
+.se-peek { position: absolute; z-index: 30; padding: 6px; border-radius: 10px; background: var(--background-primary); border: 1px solid var(--interactive-accent); box-shadow: 0 10px 30px #000a; pointer-events: auto; }
+.se-peek-h { font-size: var(--font-ui-smaller); font-weight: 600; padding: 0 2px 5px; color: var(--text-normal); }
+.se-peek-frame { position: relative; overflow: hidden; border-radius: 6px; background: #3b3b3b; }
+.se-peek-frame img { width: 100%; height: 100%; object-fit: fill; display: block; pointer-events: none; user-select: none; }
+.se-peek-place { position: absolute; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 1px; pointer-events: none; }
+.se-peek-place i { width: 6px; height: 6px; border-radius: 50%; background: #f4f1ea; box-shadow: 0 0 0 1px #000a; }
+.se-peek-place span { font-size: 10px; color: #f4f1ea; text-shadow: 0 1px 2px #000, 0 0 4px #000; white-space: nowrap; }
+.se-peek-mark { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 2px solid var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 35%, transparent); pointer-events: none; }
+.se-ph-head { z-index: 9 !important; }
+/* A short scene drops its cast dots before they'd run into its events, then its events, keeping its number */
+.se-tlbody .se-clip { container-type: size; container-name: se-scene; }
+@container se-scene (max-height: 62px) { .se-cast { display: none; } }
+@container se-scene (max-height: 30px) { .se-clip-evs { display: none; } }

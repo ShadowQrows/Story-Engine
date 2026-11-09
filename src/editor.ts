@@ -7,6 +7,7 @@
  *  - highlight → capture box.
  */
 import { editorInfoField, TFile } from 'obsidian';
+import { tip } from './tip';
 import { Prec, RangeSetBuilder, StateEffect, StateField, EditorState, Extension, Transaction } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType, keymap } from '@codemirror/view';
 import { classify, classesFor, LineKind, STYLE_MARK, stylesOf } from './manuscript';
@@ -201,7 +202,13 @@ class SceneBar extends WidgetType {
     };
     chip('pov', this.pov ? `POV: ${this.pov}` : 'POV: set…', !this.pov, 'se-chip-pov');
     chip('when', `When: ${this.when}`, false, this.whenCls);
-    chip('where', this.where ? `Where: ${this.where}` : 'Where: set…', !this.where, 'se-chip-where');
+    // Where: read from the map (where the POV character is), shown only when known; not a button.
+    if (this.where) {
+      // A link, not a field: shows the scene on the map, zoomed to where the POV character is.
+      const w = bar.createSpan({ cls: 'se-where-link', text: `Where: ${this.where}` }); tip(w, 'Show on the Map');
+      w.addEventListener('mousedown', e => e.preventDefault());
+      w.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); this.host.onSceneChip(this.file, this.project, this.index, 'where', w.getBoundingClientRect()); });
+    }
     return bar;
   }
   ignoreEvent() { return true; }
@@ -228,7 +235,7 @@ function buildSceneBars(host: EditorHost, state: EditorState): DecorationSet {
   for (const s of spans) {
     const entry: SceneEntry | undefined = cached[s.index];
     const pov = project.get(s.meta.pov)?.name ?? '';
-    const where = project.get(s.meta.where)?.name ?? '';
+    const where = project.get(entry?.where)?.name ?? '';   // where the POV character is on the map
     const label = `${M.wordsOf(project.data).scene} ${entry?.order ?? s.index + 1}`;
     const [when, whenCls] = whenText(project, s.meta, entry);
     const widget = show ? new SceneBar(host, file, project, s.index, label, pov, when, whenCls, where) : null;

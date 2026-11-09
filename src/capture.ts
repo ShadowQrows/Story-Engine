@@ -120,7 +120,7 @@ export class Capture {
     }
     const add = this.button('New type', () => {
       if (grid.querySelector('.se-inline')) return;
-      const row = el('div', 'se-inline'); const input = el('input'); input.placeholder = 'Type name, e.g. Spirit';
+      const row = el('div', 'se-inline'); const input = el('input'); input.placeholder = 'Type Name';
       const kind = el('select', 'dropdown'); for (const [v, l] of M.BEHAVIOURS) { const o = el('option', '', l); o.value = v; kind.append(o); }
       const ok = () => { const v = input.value.trim(); if (!v) return; const [t] = project.addTypes([v], kind.value as M.Behaviour); if (t) pick(t); else { const ex = project.data.types.find(x => x.label.toLowerCase() === v.toLowerCase()); if (ex) pick(ex); } };
       input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
@@ -159,7 +159,7 @@ export class Capture {
     for (const s of styles) { const b = this.button('', () => pick(s), 'se-preset'); b.append(this.swatch(s), document.createTextNode(s.label)); wrap.append(b); }
     const add = this.button('New connection type', () => {
       if (wrap.querySelector('.se-inline')) return;
-      const row = el('div', 'se-inline'); const input = el('input'); input.placeholder = 'e.g. Sworn sword';
+      const row = el('div', 'se-inline'); const input = el('input'); input.placeholder = 'Connection Name';
       const ok = () => { const v = input.value.trim(); if (!v) return; const [s] = project.addStyles([v]); pick(s ?? project.style(v)); };
       input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
       row.append(input, this.button('Add', ok, 'se-btn mod-cta se-btn-small')); wrap.append(row); input.focus();
@@ -184,11 +184,11 @@ export class Capture {
       if (!n) { new Notice('Give it a name first.'); nameInput.focus(); return; }
       void this.create(n, t, name && name !== n && !manual ? [name] : [], passage);
     });
-    const nodes: (Node | false)[] = [this.header(manual ? 'New piece' : passage ? 'Add this passage as…' : 'Add to your world'), nameInput];
+    const nodes: (Node | false)[] = [this.header(manual ? 'New Piece' : passage ? 'Add This Passage as…' : 'Add to Your World'), nameInput];
     if (name && !manual) nodes.push(el('div', 'se-small', `Change the name if the text uses a nickname. “${name}” is kept as another name for it.`));
     if (passage) nodes.push(el('div', 'se-small', 'The highlighted passage becomes its description.'));
     nodes.push(grid);
-    if (name && !manual && project.pieces.size) { const row = el('div', 'se-acts'); row.append(this.button('Another name for…', () => this.aliasMenu(name), 'se-btn se-btn-ghost se-btn-small se-left')); nodes.push(row); }
+    if (name && !manual && project.pieces.size) { const row = el('div', 'se-acts'); row.append(this.button('Another Name for…', () => this.aliasMenu(name), 'se-btn se-btn-ghost se-btn-small se-left')); nodes.push(row); }
     this.render(nodes);
     if (!name || manual) window.setTimeout(() => nameInput.focus(), 0);
   }
@@ -223,7 +223,7 @@ export class Capture {
       const list = el('div', 'se-collected');
       for (const d of await c.project.readDescription(p)) { const q = el('div', `se-quote${d.source ? '' : ' is-typed'}`, d.text); q.style.setProperty('--se-c', t.color); list.append(q); }
       this.render([head, this.ask(['Description. '], `Highlight the text that describes ${p.name} (more than one passage is fine), or type it.`), list, this.waitBox('Waiting for you to highlight…'),
-        this.orInput('…or type a description', async v => { await c.project.addDescription(p, v, null); void this.drawStep(); }, true), nav]);
+        this.orInput('Or Type a Description', async v => { await c.project.addDescription(p, v, null); void this.drawStep(); }, true), nav]);
     } else if (s === 'conn' || s === 'involves') {
       const styles = s === 'involves' ? c.project.data.styles.filter(x => x.id === 'involved') : c.project.data.styles.filter(x => x.id !== 'involved');
       if (this.pendingTarget) {
@@ -250,12 +250,10 @@ export class Capture {
       // One panel: the suggestion on top, the mini-map under it. Click the suggestion (or Done) to accept it, or click your own spot.
       const sug = this.suggest();
       this.sug = sug;
-      const noPlace = !c.scene?.where;
-      const nodes: (Node | false)[] = [head, this.ask(['Where '], M.say(M.wordsOf(c.project.data), `is ${p.name} in this scene?${noPlace ? ' Click inside a location and it becomes the scene\'s location too.' : ''}`))];
+      const nodes: (Node | false)[] = [head, this.ask(['Where '], M.say(M.wordsOf(c.project.data), `is ${p.name} in this scene?`))];
       if (sug) { const b = this.button('', () => { this.where = sug.entry; this.next(); }, 'se-suggest'); b.append(el('span', 'se-suggest-k', 'Suggested'), document.createTextNode(sug.label)); nodes.push(b); }
       nodes.push(this.miniMap({ mode: 'spot', exclude: p.id, focus: sug?.place ?? null, onPick: async r => {
         this.where = r.entry ?? null;
-        if (r.entry?.place && noPlace && c.scene && c.file) await c.project.setSceneMeta(c.file, c.scene.index, { where: r.entry.place });
         this.next();
       } }));
       nodes.push(nav);
@@ -337,18 +335,18 @@ export class Capture {
     const pl = project.get(scene?.where), b = project.behaviour(p), sc = M.wordsOf(project.data).scene.toLowerCase();
     const menu = el('div', 'se-menu');
     const item = (text: string, fn: () => void, hint?: string) => { const bt = this.button(text, fn); if (hint) tip(bt, hint); menu.append(bt); };
-    item('Add description', () => this.quickDesc(p));
-    item('Add connection', () => this.quickConn(p));
+    item('Add Description', () => this.quickDesc(p));
+    item('Add Connection', () => this.quickConn(p));
     const deadNow = !!scene && b === 'token' && !!project.cachedTimeline() && !!M.deathAt(project.data, p.id, scene.slot, project.cachedTimeline()!.t.slotOfScene);
     if (b !== 'place' && scene && !deadNow) {
-      item('In this scene', async () => {
+      item('In This Scene', async () => {
         const prev = project.where(p, scene.slot);
         project.checkpoint({ what: `placing ${p.name}` }); await project.place(p, scene, pl ? { place: pl.id } : prev?.place ? { place: prev.place } : prev?.pt ? { pt: prev.pt } : {});
         project.setView(scene.order); new Notice(`${p.name} is in ${sc} ${scene.order}${pl ? ' at ' + pl.name : ''}.`); this.close();
       }, `On the map in ${sc} ${scene.order}${pl ? ', at ' + pl.name : ''}`);
-      if (b === 'token') item('Dies here', async () => { project.checkpoint({ what: `${p.name}'s death` }); await project.markGone(p, scene, true); project.setView(scene.order); new Notice(`${p.name} is dead from ${sc} ${scene.order} on, and listed under Dead.`); this.close(); }, `Dead from ${sc} ${scene.order} on`);
-      item('Gone from here', async () => { project.checkpoint({ what: `marking ${p.name} gone` }); await project.markGone(p, scene); project.setView(scene.order); new Notice(`${p.name} is off the map from ${sc} ${scene.order} on.`); this.close(); }, `Off the map from ${sc} ${scene.order} on`);
-    } else if (scene) item('Set as scene location', () => { void project.setSceneMeta(file, scene.index, { where: p.id }); this.close(); }, `${M.wordsOf(project.data).scene} ${scene.order} takes place here`);
+      if (b === 'token') item('Dies Here', async () => { project.checkpoint({ what: `${p.name}'s death` }); await project.markGone(p, scene, true); project.setView(scene.order); new Notice(`${p.name} is dead from ${sc} ${scene.order} on, and listed under Dead.`); this.close(); }, `Dead from ${sc} ${scene.order} on`);
+      item('Gone From Here', async () => { project.checkpoint({ what: `marking ${p.name} gone` }); await project.markGone(p, scene); project.setView(scene.order); new Notice(`${p.name} is off the map from ${sc} ${scene.order} on.`); this.close(); }, `Off the map from ${sc} ${scene.order} on`);
+    }
     if (p.type === 'character' && scene) item('Set as POV', () => { void project.setSceneMeta(file, scene.index, { pov: p.id }); this.close(); }, `${M.wordsOf(project.data).scene} ${scene.order} is seen through ${p.name}'s eyes`);
     this.render([this.header(`${p.name} · ${project.type(p.type).label}`), menu]);
   }
@@ -392,15 +390,21 @@ export class Capture {
   private whenMenu(project: Project, all: SceneEntry[], scene: SceneEntry) {
     const f = scene.file, i = scene.index, meta = scene.span.meta;
     const say = (t: string) => M.say(M.wordsOf(project.data), t);
-    const set = async (patch: Partial<M.SceneMeta>) => { await project.setSceneMeta(f, i, patch); project.setView(scene.order); this.close(); };
+    const set = async (patch: Partial<M.SceneMeta>) => {
+      // Made parallel or a flashback: a date starting here moves on to the next scene that moves time on.
+      const m = scene.span.meta.moment ? project.moment(scene.span.meta.moment) : undefined;
+      const handed = (patch.with || patch.flash) && m ? await project.handOnMoment(scene) : null;
+      await project.setSceneMeta(f, i, patch); project.setView(scene.order); this.close();
+      if (handed && m) new Notice(M.say(M.wordsOf(project.data), `${m.label} now starts at scene ${handed.order}.`));
+    };
     const big = (title: string, sub: string, fn: () => void, on = false) => { const b = this.button(title, fn, `se-bigchoice ${on ? 'is-current' : ''}`); tip(b, sub); return b; };
     const named = el('div', 'se-newmoment');
     const nameRow = (placeholder: string, skip: boolean) => {
       named.replaceChildren();
       // A time skip says how much time passed; the stretch after it can have its own name (or just use that).
       const name = el('input', 'se-namefield'); name.placeholder = skip ? 'How much time passed? e.g. Two years later' : placeholder;
-      const label = skip ? el('input', 'se-namefield se-light') : null; if (label) label.placeholder = 'Name of what follows (optional), e.g. The king\'s visit';
-      const note = el('input', 'se-namefield se-light'); note.placeholder = 'Note (optional)';
+      const label = skip ? el('input', 'se-namefield se-light') : null; if (label) label.placeholder = 'Name of What Follows';
+      const note = el('input', 'se-namefield se-light'); note.placeholder = 'Note';
       const go = async () => {
         const v = name.value.trim(); if (!v) { name.focus(); return; }
         const id = skip ? project.addMoment(label!.value.trim() || v, note.value, v) : project.addMoment(v, note.value);
@@ -419,24 +423,24 @@ export class Capture {
       return [el('div', 'se-small', title), menu];
     };
     const view = (mode: 'main' | 'with' | 'flash') => {
-      if (mode === 'with') { this.render([this.header('Same time as…'), ...pick(say('Scene ' + scene.order + ' happens at the same time as:'), async s => set({ with: await project.ensureSceneId(s), flash: undefined, moment: undefined }))]); return; }
+      if (mode === 'with') { this.render([this.header('Same Time as…'), ...pick(say('Earlier Scenes'), async s => set({ with: await project.ensureSceneId(s), flash: undefined, moment: undefined }))]); return; }
       if (mode === 'flash') {
         const chips = el('div', 'se-presets');
         for (const b of (project.cachedTimeline()?.t.bands ?? [])) chips.append(this.button(b.moment.label, () => void set({ flash: b.moment.id, with: undefined, moment: undefined }), 'se-preset'));
-        this.render([this.header('Flashback to…'), el('div', 'se-small', say('A named moment:')), chips, ...pick(say('…or the time of an earlier scene:'), async s => set({ flash: await project.ensureSceneId(s), with: undefined, moment: undefined }))]);
+        this.render([this.header('Flashback to…'), el('div', 'se-small', say('Named Moments')), chips, ...pick(say('Earlier Scenes'), async s => set({ flash: await project.ensureSceneId(s), with: undefined, moment: undefined }))]);
         return;
       }
       const plain = !meta.moment && !meta.with && !meta.flash;
       const existing = el('div', 'se-presets');
       for (const m of project.data.moments) existing.append(this.button(m.skip ? `⤳ ${M.skipLabel(m)}${M.skipLabel(m) !== m.label ? ' · ' + m.label : ''}` : m.label, async () => { await project.startMoment(scene, m.id); project.setView(scene.order); this.close(); }, `se-preset ${meta.moment === m.id ? 'is-current' : ''}`));
-      this.render([this.header(say(`Scene ${scene.order} · when`)),
+      this.render([this.header(say(`Scene ${scene.order} · When`)),
         big('Continues', say('A little after the scene before (the default).'), () => void set({ moment: undefined, with: undefined, flash: undefined }), plain),
-        big(say('New moment…'), 'Give this point in time a name: “Day 2”, “The Siege”, “Spring 298”.', () => nameRow(say('Moment name, e.g. Day 2'), false), !!meta.moment && !project.moment(meta.moment)?.skip),
-        big('Time skip…', 'Jumps ahead: “Two years later”. Shown as a break on the timeline.', () => nameRow('e.g. Two years later', true), !!project.moment(meta.moment)?.skip),
+        big(say('New Moment…'), 'Give this point in time a name: “Day 2”, “The Siege”, “Spring 298”.', () => nameRow(say('Moment Name'), false), !!meta.moment && !project.moment(meta.moment)?.skip),
+        big('Time Skip…', 'Jumps ahead: “Two years later”. Shown as a break on the timeline.', () => nameRow('Time Skip', true), !!project.moment(meta.moment)?.skip),
         named,
-        big('Same time as…', say('A parallel chapter: happens alongside an earlier scene.'), () => view('with'), !!meta.with),
+        big('Same Time as…', say('A parallel chapter: happens alongside an earlier scene.'), () => view('with'), !!meta.with),
         big('Flashback to…', say('Goes back to an earlier moment or scene. The map turns sepia.'), () => view('flash'), !!meta.flash),
-        ...(project.data.moments.length ? [el('div', 'se-small', say('Or start an existing moment here:')), existing] : []),
+        ...(project.data.moments.length ? [el('div', 'se-small', say('Existing Moments')), existing] : []),
       ]);
     };
     view('main');
@@ -459,7 +463,7 @@ export class Capture {
       const names = best[1], more = names.length > 2 ? ` and ${names.length - 2} more` : '';
       return { label: `With ${names.slice(0, 2).join(' and ')}${more} at ${pr.get(best[0])!.name}`, entry: { place: best[0] }, place: best[0] };
     }
-    if (sc.where && pr.get(sc.where) && pr.data.places[sc.where]) return { label: M.say(M.wordsOf(pr.data), `At ${pr.get(sc.where)!.name} (this scene's location)`), entry: { place: sc.where }, place: sc.where };
+    if (sc.where && pr.get(sc.where) && pr.data.places[sc.where]) return { label: M.say(M.wordsOf(pr.data), `At ${pr.get(sc.where)!.name}, With the POV`), entry: { place: sc.where }, place: sc.where };
     return null;
   }
 
@@ -516,7 +520,7 @@ export class Capture {
       // Choosing where a scene happens, on empty ground: name a new location there.
       this.pop.querySelector('.se-newplace')?.remove();
       const row = el('div', 'se-acts se-newplace');
-      const input = el('input', 'se-namefield'); input.placeholder = 'Name this location (e.g. Farmhouse)';
+      const input = el('input', 'se-namefield'); input.placeholder = 'Location Name';
       const placeType = d.types.find(t => t.behaviour === 'place')?.id ?? 'place';
       const ok = async () => {
         const v = input.value.trim(); if (!v) return;

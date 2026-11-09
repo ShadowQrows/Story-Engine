@@ -3,7 +3,7 @@ const B = require('./build/book.cjs'), M = require('./build/model.cjs'), fs = re
 const { chromium } = require('playwright'); const { execFileSync } = require('child_process');
 const out = path.join(__dirname, 'build', 'pdf'); fs.mkdirSync(out, { recursive: true });
 const fonts = { text: fs.readFileSync(path.join(__dirname, '../fonts/LibreBaskerville.woff2')), italic: fs.readFileSync(path.join(__dirname, '../fonts/LibreBaskerville-Italic.woff2')), blackletter: fs.readFileSync(path.join(__dirname, '../fonts/UnifrakturMaguntia.woff2')) };
-const look = { ...M.DEFAULT_LOOK, size: 15, styles: [{ id: 'epigraph', name: 'Epigraph', color: '#c9b98f', paperColor: '#7a3b2e', italic: false, align: 'left', size: 1, spaceBefore: 0, spaceAfter: 1 }] };
+const look = { ...M.DEFAULT_LOOK, styles: [{ id: 'epigraph', name: 'Epigraph', color: '#c9b98f', paperColor: '#7a3b2e', italic: false, align: 'left', size: 1, spaceBefore: 0, spaceAfter: 1 }] };
 const long = Array.from({ length: 40 }, (_, i) => `Paragraph ${i + 1}. ` + 'The bells rang over the chamber while the girls waited by the door. '.repeat(4)).join('\n');
 const chapters = [
   B.chapterBlocks(`# PROLOGUE\n%%style:epigraph%% *~Hearing nothing but the wind.~*\nCold and tired, looking up at the darkening sky.\n✦ ✦ ✦\n${long}\n`, 'Prologue'),

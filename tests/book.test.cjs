@@ -63,13 +63,13 @@ test('EPUB: mimetype first and stored, the book look in its stylesheet, the styl
   const ch = z.files['OEBPS/ch001.xhtml'];
   assert.match(ch, /<h1>PROLOGUE<\/h1>/);
   assert.match(ch, /<p class="noindent interlude st-epigraph"><em>~Pale shapes[^<]*~<\/em><\/p>/);
-  assert.match(ch, /<p class="noindent dropcap">Cold and tired, looking up at the <strong>darkening<\/strong> sky\. She saw her sister by the Farmhouse\.<\/p>\n<p class="indent">The hail started\.<\/p>\n<p class="indent" style="margin-top: 1\.5em">She stood up\.<\/p>/);
+  assert.match(ch, /<p class="noindent dropcap">Cold and tired, looking up at the <strong>darkening<\/strong> sky\. She saw her sister by the Farmhouse\.<\/p>\n<p class="indent">The hail started\.<\/p>\n<p class="indent" style="margin-top: 1\.2em">She stood up\.<\/p>/);
   assert.match(ch, /<p class="break">✦ ✦ ✦<\/p>/);
   assert.doesNotMatch(ch, /se-scene|%%/, 'hidden notes stay hidden');
   const css = z.files['OEBPS/style.css'];
   assert.match(css, /p\.st-epigraph \{ color: #6b4f2a; font-style: italic; text-align: center; text-indent: 0; font-size: 0\.95em; \}/);
-  assert.match(css, /p\.indent \{ text-indent: 3\.00em; \}/);
-  assert.match(css, /p\.dropcap::first-letter \{ float: left; font-family: "Old English Text MT", "MM Blackletter", serif; font-size: 3\.9em;/);
+  assert.match(css, /p\.indent \{ text-indent: 3\.273em; \}/);
+  assert.match(css, /p\.dropcap::first-letter \{ float: left; font-family: "Old English Text MT", "MM Blackletter", serif; font-size: 6em;/);
   assert.match(z.files['OEBPS/content.opf'], /<dc:creator>A\. Writer<\/dc:creator>/);
   // Every XML file is well-formed.
   for (const [n, txt] of Object.entries(z.files)) if (/\.(xhtml|opf|ncx|xml)$/.test(n)) execFileSync(PY, ['-c', 'import sys, xml.dom.minidom; xml.dom.minidom.parseString(sys.stdin.read().encode())'], { input: txt });
@@ -84,11 +84,11 @@ ps = [{'style': p.style.name, 'text': p.text, 'italic': [r.italic for r in p.run
 st = d.styles['Epigraph']
 print(json.dumps({'ps': ps, 'color': str(st.font.color.rgb), 'italic': st.font.italic, 'align': str(st.paragraph_format.alignment)}))`, f]));
   const styles = out.ps.map(p => p.style);
-  assert.deepEqual(styles, ['Title', 'Subtitle', 'Heading 1', 'Epigraph', 'Body Text First', 'Body Text First', 'Body Text', 'Body Text', 'Scene Break', 'Body Text']);
-  assert.equal(out.ps[4].text, 'C', 'the drop cap: the first letter in its own box'); assert.match(out.ps[5].text, /^old and tired/);
-  assert.equal(out.ps[3].text, '~Pale shapes moved between the trees, silent as the dead.~');
+  assert.deepEqual(styles, ['Title', 'Subtitle', 'Chapter Start', 'Heading 1', 'Epigraph', 'Body Text First', 'Body Text First', 'Body Text', 'Body Text', 'Scene Break', 'Body Text']);
+  assert.equal(out.ps[5].text, 'C', 'the drop cap: the first letter in its own box'); assert.match(out.ps[6].text, /^old and tired/);
+  assert.equal(out.ps[4].text, '~Pale shapes moved between the trees, silent as the dead.~');
   assert.equal(out.color, '6B4F2A'); assert.equal(out.italic, true); assert.match(out.align, /CENTER/);
-  assert.deepEqual(out.ps[5].bold, [null, true, null], 'bold kept');
+  assert.deepEqual(out.ps[6].bold, [null, true, null], 'bold kept');
 });
 
 test('web copy: plain paragraphs, the style written on its paragraph, and a plain-text version', () => {
@@ -122,7 +122,7 @@ test('empty lines are space: the line kind, the blocks, EPUB margin, Word spacin
 import docx, sys, json
 d = docx.Document(sys.argv[1]); print(json.dumps([[p.text, p.paragraph_format.space_before.pt if p.paragraph_format.space_before is not None else None] for p in d.paragraphs]))`, f]));
   const sb = before.find(x => x[0] === 'After two lines of space.')[1];
-  assert.ok(Math.abs(sb - 2 * 17 * 0.75 * 1.5) < 0.06, `two lines before (${sb}pt)`);
+  assert.ok(Math.abs(sb - 2 * l.size * l.lineHeight) < 0.06, `two lines before (${sb}pt)`);
 });
 
 test('2.10 a style can carry space before and after (lines), in every export', () => {
@@ -132,13 +132,13 @@ test('2.10 a style can carry space before and after (lines), in every export', (
   assert.match(B.webChapter(ch, l).html, /~Bells\.~<\/em><\/p>\n<p>&nbsp;<\/p>\n<p>The chamber/);
   const f = path.join(tmp, 'st.docx'); fs.writeFileSync(f, B.buildDocx(meta, [ch], l));
   const after = execFileSync(PY, ['-c', 'import docx, sys; d = docx.Document(sys.argv[1]); print(d.styles["Epigraph"].paragraph_format.space_after.pt)', f]).toString().trim();
-  assert.ok(Math.abs(Number(after) - 17 * 0.75 * 1.5) < 0.06, `one line after (${after}pt)`);
+  assert.ok(Math.abs(Number(after) - l.size * l.lineHeight) < 0.06, `one line after (${after}pt)`);
   assert.equal(M.normalizeData({ look: { styles: [{ id: 'a', spaceBefore: 2, spaceAfter: 99 }] } }).look.styles[0].spaceAfter, 10);
 });
 
 test('Word drop cap: a box the text flows around, lines tall, with the letter at the drop cap size; fonts embedded', () => {
   const ttf = { text: fs.readFileSync(path.join(__dirname, '../fonts/LibreBaskerville.ttf')), italic: fs.readFileSync(path.join(__dirname, '../fonts/LibreBaskerville-Italic.ttf')), blackletter: fs.readFileSync(path.join(__dirname, '../fonts/UnifrakturMaguntia.ttf')) };
-  const l = { ...M.DEFAULT_LOOK, size: 16, lineHeight: 1.5, dropcapSize: 3.9 };
+  const l = { ...M.DEFAULT_LOOK, size: 12, lineHeight: 1.5, dropcapSize: 3.9 };
   const fit = { font: 'UnifrakturMaguntia', embedded: true, lines: 3, ascent: 0.75, descent: 0.2, width: 0.8 };
   const z = unzip(B.buildDocx(meta, [B.chapterBlocks(PROLOGUE, 'Prologue')], l, ttf, fit));
   const doc = z.files['word/document.xml'];
@@ -156,8 +156,69 @@ test('Word drop cap: a box the text flows around, lines tall, with the letter at
 
 test('the Word file uses the chosen page size and margins', () => {
   const z = unzip(B.buildDocx({ ...meta, pageSize: 'A4' }, [B.chapterBlocks(PROLOGUE, 'Prologue')], look()));
-  assert.match(z.files['word/document.xml'], /<w:pgSz w:w="11909" w:h="16834"\/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/);
+  assert.match(z.files['word/document.xml'], /<w:pgSz w:w="11909" w:h="16834"\/><w:pgMar w:top="1440" w:right="1432" w:bottom="1440" w:left="1440"/);
   const z2 = unzip(B.buildDocx(meta, [B.chapterBlocks(PROLOGUE, 'Prologue')], look()));
   assert.match(z2.files['word/document.xml'], /<w:pgSz w:w="8640" w:h="12960"\/>/, '6 × 9 when none is chosen');
 });
 
+
+// A real 2×1 PNG (red, blue).
+const PNG = new Uint8Array(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAEElEQVR4nGP4z8DAwMDAAAAN/wH/cLXR3AAAAABJRU5ErkJggg==', 'base64'));
+const WITH_PICTURES = `# BRAN\nThe wolves ran.\n![[winterfell.png|The castle]]\n![](maps/wall.jpg)\n![[notes.md]]\n| a | b |\n|---|---|\n\`\`\`\ncode\n\`\`\`\nThe end.`;
+
+test('pictures: read from the line, sized from the file, and counted when left out', () => {
+  assert.deepEqual(B.imageRef('![[winterfell.png|The castle]]'), { ref: 'winterfell.png', alt: 'The castle' });
+  assert.deepEqual(B.imageRef('![[winterfell.png|300]]'), { ref: 'winterfell.png', alt: '' }, 'a width is not a caption');
+  assert.deepEqual(B.imageRef('![The Wall](maps/wall.jpg)'), { ref: 'maps/wall.jpg', alt: 'The Wall' });
+  assert.equal(B.imageRef('![[notes.md]]'), null, 'an embedded note is not a picture');
+  assert.equal(B.imageRef('He saw ![[a.png]] there.'), null, 'only a line that is just the picture');
+  assert.deepEqual(B.imageSize(PNG), { w: 2, h: 1 });
+  const off = B.chapterBlocks(WITH_PICTURES, 'Bran');
+  assert.deepEqual(off.left, { images: 2, tables: 1, code: 1 });
+  assert.ok(!off.blocks.some(b => b.type === 'image'));
+  assert.deepEqual(off.blocks.filter(b => b.type === 'p').map(b => B.plain(b.lines[0])), ['The wolves ran.', 'The end.'], 'nothing from the code block gets in');
+  const on = B.chapterBlocks(WITH_PICTURES, 'Bran', { images: true });
+  assert.deepEqual(on.blocks.filter(b => b.type === 'image').map(b => b.ref), ['winterfell.png', 'maps/wall.jpg']);
+  assert.equal(on.left.images, 0);
+});
+
+test('pictures go into the EPUB, the Word file and the PDF page, and the web copy skips them', () => {
+  const ch = B.chapterBlocks(WITH_PICTURES, 'Bran', { images: true });
+  const media = new Map([['winterfell.png', { data: PNG, mime: 'image/png', ext: 'png', w: 2, h: 1 }]]);   // wall.jpg wasn't found
+  const e = unzip(B.buildEpub(meta, [ch, ch], look(), undefined, media));
+  assert.equal(e.bad, null);
+  assert.equal(e.names.filter(n => n.startsWith('OEBPS/images/')).length, 1, 'one copy of a picture used twice');
+  assert.match(e.files['OEBPS/content.opf'], /<item id="img1" href="images\/img1\.png" media-type="image\/png"\/>/);
+  assert.match(e.files['OEBPS/ch001.xhtml'], /<div class="img"><img src="images\/img1\.png" alt="The castle"\/><\/div>/);
+  const d = unzip(B.buildDocx(meta, [ch], look(), undefined, undefined, media));
+  assert.equal(d.bad, null); assert.ok(d.names.includes('word/media/img1.png'));
+  assert.match(d.files['word/_rels/document.xml.rels'], /Id="rIdI1"[^>]*Target="media\/img1\.png"/);
+  assert.match(d.files['[Content_Types].xml'], /<Default Extension="png" ContentType="image\/png"\/>/);
+  assert.match(d.files['word/document.xml'], /<a:blip r:embed="rIdI1"\/>/);
+  const f = path.join(tmp, 'pic.docx'); fs.writeFileSync(f, B.buildDocx(meta, [ch], look(), undefined, undefined, media));
+  assert.equal(execFileSync(PY, ['-c', 'import docx,sys; print(len(docx.Document(sys.argv[1]).inline_shapes))', f]).toString().trim(), '1', 'Word-compatible readers see the picture');
+  assert.match(B.buildPrintHtml(meta, [ch], look(), undefined, media), /<img src="data:image\/png;base64,[^"]+" alt="The castle"\/>/);
+  assert.doesNotMatch(B.webChapter(ch, look()).html, /<img/);
+});
+
+test('Word: lines are exactly as far apart as on screen and in the PDF (size × line spacing), titles get room', () => {
+  const l = { ...M.DEFAULT_LOOK, size: 11, lineHeight: 1.2 };
+  const z = unzip(B.buildDocx(meta, [B.chapterBlocks(PROLOGUE, 'Prologue')], l));
+  assert.match(z.files['word/styles.xml'], /<w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0" w:line="264" w:lineRule="exact"\/>/, '11pt × 1.2 = 13.2pt = 264 twips');
+  assert.match(z.files['word/styles.xml'], /w:styleId="Heading1">[\s\S]*?w:line="240" w:lineRule="auto"/, 'a big title is not cut off');
+});
+
+test('Word: page numbers at the bottom (none on the title page), margins as in the PDF', () => {
+  const ch = [B.chapterBlocks(PROLOGUE, 'Prologue')];
+  const z = unzip(B.buildDocx(meta, ch, look()));
+  assert.ok(z.names.includes('word/footer1.xml'));
+  assert.match(z.files['word/footer1.xml'], /<w:instrText xml:space="preserve"> PAGE <\/w:instrText>/);
+  assert.match(z.files['word/document.xml'], /<w:sectPr><w:footerReference w:type="default" r:id="rIdP1"\/>[\s\S]*<w:titlePg\/><\/w:sectPr>/);
+  assert.match(z.files['word/_rels/document.xml.rels'], /Id="rIdP1"[^>]*Target="footer1\.xml"/);
+  assert.match(z.files['word/document.xml'], /w:right="1000"[^>]*w:left="1008"/, 'the same on both sides: 0.7in on a 6×9 page');
+  const m = unzip(B.buildDocx({ ...meta, mirror: true }, ch, look()));
+  assert.match(m.files['word/document.xml'], /w:right="856"[^>]*w:left="1152"/, 'mirrored: wider on the binding side');
+  assert.match(m.files['word/settings.xml'], /<w:mirrorMargins\/>/);
+  const f = path.join(tmp, 'mirror.docx'); fs.writeFileSync(f, B.buildDocx({ ...meta, mirror: true }, ch, look()));
+  assert.equal(execFileSync(PY, ['-c', 'import docx,sys; print(len(docx.Document(sys.argv[1]).sections))', f]).toString().trim(), '1', 'opens in Word-compatible readers');
+});

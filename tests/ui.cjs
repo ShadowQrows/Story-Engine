@@ -44,7 +44,7 @@ const FILES = { 'ASOIAF Sample/01 Prologue.md': fx('01 Prologue.md'), 'ASOIAF Sa
   await step('no story yet: World shows set-up; set up "ASOIAF Sample" from its folder', async () => {
     await page.evaluate(() => plugin.openWorld()); await wait(200);
     assert.ok(await page.isVisible('text=No story yet'));
-    await page.click('text=Set up a story…');
+    await page.click('text=Set Up a Story…');
     await page.evaluate(() => __fuzzy.choose('ASOIAF Sample')); await wait(400);
     assert.ok(await file('ASOIAF Sample/story-engine.json'), 'data file created');
     assert.equal(await page.inputValue('.se-story-pick'), 'ASOIAF Sample');
@@ -148,7 +148,7 @@ const FILES = { 'ASOIAF Sample/01 Prologue.md': fx('01 Prologue.md'), 'ASOIAF Sa
     await sceneBar(4).locator('.se-chip:has-text("When")').waitFor({ timeout: 2000 }).catch(() => cursorAt('✦ ✦ ✦', 1));
     await wait(300);
     await sceneBar(4).locator('.se-chip:has-text("When")').click(); await wait(200);
-    await pop().locator('.se-bigchoice:has-text("Time skip")').click();
+    await pop().locator('.se-bigchoice:has-text("Time Skip")').click();
     await pop().locator('.se-newmoment .se-namefield').first().fill('Two years later'); await pop().locator('.se-newmoment .se-namefield').first().press('Enter'); await wait(800);
     assert.ok(await page.isVisible('.se-skiplabel:has-text("Two years later")'), 'skip break on the timeline');
     assert.equal((await data()).moments.find(m => m.skipText === 'Two years later')?.skip, true, 'the skip text is kept with the moment');
@@ -157,7 +157,7 @@ const FILES = { 'ASOIAF Sample/01 Prologue.md': fx('01 Prologue.md'), 'ASOIAF Sa
     await wait(400);
     await cursorAt('# CATELYN'); await wait(300);
     await sceneBar(5).locator('.se-chip:has-text("When")').click(); await wait(200);
-    await pop().locator('.se-bigchoice:has-text("Same time as")').click(); await wait(100);
+    await pop().locator('.se-bigchoice:has-text("Same Time as")').click(); await wait(100);
     await pop().locator('.se-menu button:has-text("Bran · 1")').click(); await wait(800);
     await cursorAt('✦ ✦ ✦'); await wait(400);
     await sceneBar(6).locator('.se-chip:has-text("When")').click(); await wait(200);

@@ -22,20 +22,36 @@ export function syncChapters(view: MarkdownView, project: Project, open: boolean
   }
   btn.onclick = toggle;
   btn.toggleClass('is-active', open);
-  // Sit below the book-look strip when it's open.
-  const look = host.querySelector(':scope > .se-lookbar.is-open') as HTMLElement | null;
-  const top = look ? look.offsetHeight : 0;
-  btn.style.top = `${top + 8}px`;
   let strip = stripOf(view);
   watchFit(view);
-  if (!open) { strip?.remove(); fitPage(view); return; }
+  if (!open) { strip?.remove(); placeOverlays(view); fitPage(view); return; }
   if (!strip) strip = host.createDiv('se-chapters');
-  strip.style.top = `${top + 44}px`;
+  placeOverlays(view);
   fitPage(view);
   if (strip.contains(document.activeElement) || strip.hasClass('is-dragging-list')) return;
   void draw(strip, view, project);
 }
-export function removeChapters(view: MarkdownView) { stripOf(view)?.remove(); view.contentEl.querySelector(':scope > .se-chapters-btn')?.remove(); fitPage(view); }
+export function removeChapters(view: MarkdownView) {
+  // Stop watching the pane too: after a reload (or an update) the old watcher would keep running the old code.
+  const v = view as unknown as { __seFit?: ResizeObserver }; v.__seFit?.disconnect(); delete v.__seFit;
+  stripOf(view)?.remove(); view.contentEl.querySelectorAll(':scope > .se-chapters-btn, :scope > .se-page-zoom').forEach(e => e.remove()); fitPage(view); }
+
+/** The chapter zoom, shown next to the Chapters button; a click goes back to 100%. */
+export function syncZoom(view: MarkdownView, zoom: number, reset: () => void) {
+  const host = view.contentEl, btn = host.querySelector(':scope > .se-chapters-btn') as HTMLElement | null;
+  let pill = host.querySelector(':scope > .se-page-zoom') as HTMLElement | null;
+  if (!pill) { pill = host.createDiv('se-page-zoom'); host.append(pill); }
+  pill.setText(`${Math.round(zoom * 100)}%`);
+  pill.onclick = reset;
+  placeOverlays(view);
+}
+/** The Chapters button, the zoom and the list sit just below the Aa panel, wherever its bottom is now (it grows when it wraps). */
+function placeOverlays(view: MarkdownView) {
+  const host = view.contentEl, look = host.querySelector(':scope > .se-lookbar.is-open') as HTMLElement | null;
+  const top = look ? look.offsetHeight : 0;
+  const at = (sel: string, y: number) => { const e = host.querySelector(`:scope > ${sel}`) as HTMLElement | null; if (e) e.style.top = `${top + y}px`; };
+  at('.se-chapters-btn', 8); at('.se-page-zoom', 14); at('.se-chapters', 44);
+}
 
 /**
  * The chapter list floats over the left of the page. Only when it would cover the text does the page move right
@@ -52,19 +68,27 @@ export function fitPage(view: MarkdownView) {
     const left = r.left + parseFloat(cs.paddingLeft), right = r.left + scroller.clientWidth - parseFloat(cs.paddingRight), width = right - left;
     const max = parseFloat(getComputedStyle(sizer).maxWidth) || width, natural = left + Math.max(0, (width - Math.min(max, width)) / 2);
     const target = strip.getBoundingClientRect().right + 16;
-    if (natural >= target) continue;
+    // Too narrow to push the page aside and still leave room to read: the list floats over the page instead.
+    const squeezed = natural < target && right - target < Math.min(max, 480);
+    strip.toggleClass('is-floating', squeezed);
+    if (natural >= target || squeezed) continue;
     sizer.style.setProperty('margin-left', `${Math.max(0, target - left)}px`, 'important');
     sizer.style.setProperty('margin-right', '0px', 'important');
     sizer.style.setProperty('max-width', `${Math.max(240, Math.min(max, right - target))}px`, 'important');
   }
 }
 /** Fit the page again whenever the note's pane changes size (dragging the World view's edge, say). */
+const FIT_OWNER = {};   // this copy of the plugin: a watcher left by an older copy (before an update) is replaced
 function watchFit(view: MarkdownView) {
-  const v = view as unknown as { __seFit?: ResizeObserver };
-  if (v.__seFit) return;
+  const v = view as unknown as { __seFit?: ResizeObserver; __seFitOwner?: object };
+  if (v.__seFit && v.__seFitOwner === FIT_OWNER) return;
+  v.__seFit?.disconnect(); v.__seFitOwner = FIT_OWNER;
   let raf = 0;
-  v.__seFit = new ResizeObserver(() => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; fitPage(view); }); });
+  v.__seFit = new ResizeObserver(() => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; placeOverlays(view); fitPage(view); }); });
   v.__seFit.observe(view.contentEl);
+  // The Aa panel changes height as it wraps (or opens and closes) without the view changing size.
+  const look = view.contentEl.querySelector(':scope > .se-lookbar');
+  if (look) v.__seFit.observe(look);
   view.register(() => v.__seFit?.disconnect());
 }
 
@@ -128,10 +152,10 @@ async function draw(strip: HTMLElement, view: MarkdownView, project: Project) {
   });
   if (!files.length) list.createDiv({ cls: 'se-empty', text: 'No chapters yet.' });
   list.scrollTop = scroll;
-  const add = inner.createEl('button', { cls: 'se-ch-add', text: 'New chapter' });
+  const add = inner.createEl('button', { cls: 'se-ch-add', text: 'New Chapter' });
   add.onclick = () => {
     const box = inner.createDiv('se-ch-new'); add.remove();
-    const input = box.createEl('input'); input.placeholder = 'Chapter title, then Enter (Esc to cancel)';
+    const input = box.createEl('input'); input.type = 'text'; input.placeholder = 'Chapter Title';
     input.onkeydown = async e => {
       if (e.key === 'Escape') { input.blur(); void draw(strip, view, project); return; }
       if (e.key !== 'Enter' || !input.value.trim()) return;

@@ -111,7 +111,7 @@ export class Project extends Events {
     const f = this.app.vault.getAbstractFileByPath(this.dataPath);
     if (!(f instanceof TFile)) return;
     const text = await this.app.vault.read(f);
-    if (text === this.written) return;
+    if (text === this.written || text === this.writing) return;
     let next: M.ProjectData;
     try { next = M.normalizeData(JSON.parse(text)); } catch { return; }   // half-written: the next change event brings the rest
     if (this.saveTimer !== null) { window.clearTimeout(this.saveTimer); this.saveTimer = null; }
@@ -121,7 +121,7 @@ export class Project extends Events {
   }
   /** This story is gone (its folder moved, its data file deleted): a save still waiting must not write it back. */
   disposed = false;
-  dispose() { this.disposed = true; if (this.saveTimer !== null) { window.clearTimeout(this.saveTimer); this.saveTimer = null; } }
+  dispose() { this.disposed = true; if (this.saveTimer !== null) { window.clearTimeout(this.saveTimer); this.saveTimer = null; } if (this.retryTimer !== null) { window.clearTimeout(this.retryTimer); this.retryTimer = null; } }
   /** A file or folder moved: the paths this story keeps (map pictures, roof pictures, image icons, where scenes are) follow it. */
   followMove(from: string, to: string) {
     const mv = (x: string | null | undefined) => x && (x === from || x.startsWith(from + '/')) ? to + x.slice(from.length) : x ?? null;
@@ -154,10 +154,23 @@ export class Project extends Events {
     // A data file this story never managed to read must never be saved over (that would wipe the map and timeline).
     if (f instanceof TFile && !this.readOk) return;
     if (!(f instanceof TFile) && await this.app.vault.adapter.exists(this.dataPath).catch(() => false)) return;
-    this.readOk = true;
-    this.written = text;
-    if (f instanceof TFile) await this.app.vault.modify(f, text); else await this.app.vault.create(this.dataPath, text);
+    // Only once the file is really written is it noted as saved: a write that fails (the file locked by sync, a
+    // full disk) is tried again until it works, so the latest changes are never left unsaved without a word.
+    this.writing = text;
+    try {
+      if (f instanceof TFile) await this.app.vault.modify(f, text); else await this.app.vault.create(this.dataPath, text);
+      this.readOk = true; this.written = text;
+      if (this.saveFailed) { this.saveFailed = false; new Notice(`Story Engine: “${this.name}” is saved again.`); }
+    } catch (err) {
+      if (!this.saveFailed) new Notice(`Story Engine: “${this.name}” couldn't be saved (${(err as Error).message || 'the file is busy'}). Trying again every few seconds…`, 8000);
+      this.saveFailed = true;
+      if (this.retryTimer === null) this.retryTimer = window.setTimeout(() => { this.retryTimer = null; void this.saveNow(); }, 5000);
+    } finally { this.writing = null; }
   }
+  /** The text being written right now (its own change event mustn't look like someone else's), and whether the last write failed. */
+  private writing: string | null = null;
+  private saveFailed = false;
+  private retryTimer: number | null = null;
 
   /* ───────── definitions ───────── */
 
@@ -690,9 +703,11 @@ export class Project extends Events {
         })(), 0);
       }
       const t = M.buildTimeline(raw.map(r => r.span.meta), this.data.moments);
+      // A scene's place is where its POV character is on the map in that scene (worked out when asked, so it follows the map).
+      const live = (e: SceneEntry) => Object.defineProperty(e, 'where', { enumerable: true, configurable: true, get: () => { const pov = this.get(e.pov); return pov ? this.placeOfEntry(this.where(pov, e.slot) as M.TrackEntry | null) : null; } });
       const scenes: SceneEntry[] = raw.map((r, i) => {
         const ts = t.scenes[i];
-        return { file: r.file, chapter: r.chapter, index: r.span.index, span: r.span, order: i + 1, label: r.count > 1 ? `${r.chapter} · ${r.span.index + 1}` : r.chapter, id: r.span.meta.id, pov: r.span.meta.pov ?? null, where: r.span.meta.where ?? null, slot: ts.slot, kind: ts.kind, ref: ts.ref, band: M.bandAt(t, ts.slot), snippet: r.snippet };
+        return live({ file: r.file, chapter: r.chapter, index: r.span.index, span: r.span, order: i + 1, label: r.count > 1 ? `${r.chapter} · ${r.span.index + 1}` : r.chapter, id: r.span.meta.id, pov: r.span.meta.pov ?? null, where: r.span.meta.where ?? null, slot: ts.slot, kind: ts.kind, ref: ts.ref, band: M.bandAt(t, ts.slot), snippet: r.snippet } as SceneEntry);
       });
       this.cache = { scenes, t };
       this.rememberScenes(scenes);
@@ -795,6 +810,24 @@ export class Project extends Events {
   /** What a spot on a map means: inside a place's area, or just a spot. */
   spot(mapId: string, pt: M.Point) { return M.spotEntry(this.data, mapId, pt, this.isPlaceId); }
   setRoof(placeId: string, roof: M.Roof | null) { if (roof) this.data.roofs[placeId] = roof; else delete this.data.roofs[placeId]; this.saveSoon(); }
+  /** The place an entry is at: its place, else the place whose area holds its spot, else (on an inside map) the place that map is inside. */
+  placeOfEntry(e: { place?: string; pt?: M.Point; m?: string } | null | undefined): string | null {
+    if (!e) return null;
+    if (e.place) return e.place;
+    if (!e.pt) return null;
+    const map = e.m || M.MAIN_MAP;
+    const pid = M.placeAt(this.data, map, e.pt, this.isPlaceId); if (pid) return pid;
+    return map !== M.MAIN_MAP ? this.data.maps.find(x => x.id === map)?.anchor ?? null : null;
+  }
+  /** Is place `a` the place `b`, or somewhere inside it (on its inside map, or deeper)? */
+  within(a: string | null, b: string | null): boolean {
+    for (let q = a, n = 0; q && n < 20; n++) {
+      if (q === b) return true;
+      const map = M.mapOfPlace(this.data, q);
+      q = map !== M.MAIN_MAP ? this.data.maps.find(x => x.id === map)?.anchor ?? null : null;
+    }
+    return false;
+  }
   /** Which map a scene is best shown on: its place's map, else where its POV is, else the main map. */
   sceneMap(s: SceneEntry | undefined): string {
     if (!s) return M.MAIN_MAP;
@@ -871,6 +904,18 @@ export class Project extends Events {
     this.invalidateScenes(); this.saveSoon();
   }
   /** Make a scene start a named moment (removing that moment from any other scene). */
+  /**
+   * A scene that starts a moment is about to stop moving time on (made parallel, or a flashback): the moment starts at the next
+   * scene that does instead, so it isn't lost. That scene, or null when there's none free (the next one starts its own moment).
+   */
+  async handOnMoment(s: SceneEntry): Promise<SceneEntry | null> {
+    const id = s.span.meta.moment; if (!id || !this.moment(id)) return null;
+    const tl = await this.timeline();
+    const next = tl.scenes.find(o => o.order > s.order && o.kind === 'next');
+    if (!next || next.span.meta.moment) return null;
+    await this.setSceneMeta(next.file, next.index, { moment: id });
+    return next;
+  }
   async startMoment(s: SceneEntry, momentId: string) {
     const tl = await this.timeline();
     for (const o of tl.scenes) if (o !== s && o.span.meta.moment === momentId) await this.setSceneMeta(o.file, o.index, { moment: undefined });

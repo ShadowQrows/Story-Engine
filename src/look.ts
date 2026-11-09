@@ -3,21 +3,25 @@
  * The settings live in the story's story-engine.json (one look per story) and apply live.
  * Book settings also apply to reading view, printing and PDF export; page width and text colour are screen-only.
  */
-import { MarkdownView } from 'obsidian';
+import { MarkdownView, Menu, setIcon } from 'obsidian';
 import * as M from './model';
+import { tip } from './tip';
+import { menuButton } from './toggle';
 import type { Project } from './project';
 
 const FONTS = ['Libre Baskerville', 'Georgia', 'Garamond', 'EB Garamond', 'Times New Roman', 'Palatino Linotype', 'Book Antiqua', 'Cambria', 'Baskerville', 'Merriweather', 'Crimson Text', 'Iowan Old Style'];
 const DROPCAP_FONTS = ['Old English Text MT', 'Blackletter (built in)', 'Same as the text'];
 const q = (s: string) => `"${s.replace(/["\\]/g, '')}"`;
 
+/** On screen, 100% chapter zoom draws the page this much larger than its print size (what used to be 182%). */
+export const SCREEN_SCALE = 1.82;
 /** CSS variables for a look. `screen` adds the screen-only ones; `zoom` enlarges the page on screen only (Ctrl+wheel). */
 export function lookVars(l: M.BookLook, screen: boolean, zoom = 1): Record<string, string> {
-  const z = screen ? zoom : 1;
+  const z = screen ? zoom * SCREEN_SCALE : 1;
   const text = `${q(l.font || 'Libre Baskerville')}, "MM Baskerville", Georgia, serif`;
   const drop = l.dropcapFont === 'Same as the text' ? text : l.dropcapFont === 'Blackletter (built in)' ? '"MM Blackletter", serif' : `${q(l.dropcapFont || 'Old English Text MT')}, "MM Blackletter", serif`;
   const v: Record<string, string> = {
-    '--se-font': text, '--se-size': `${+(l.size * z).toFixed(2)}px`, '--se-line-height': String(l.lineHeight), '--se-para-space': `${l.paraSpace}em`,
+    '--se-font': text, '--se-size': screen ? `${+(l.size * z).toFixed(2)}px` : `${l.size}pt`, '--se-line-height': String(l.lineHeight), '--se-para-space': `${l.paraSpace}em`,
     '--se-indent': `${+(l.indent * z).toFixed(3)}in`, '--se-title-size': `${l.titleSize}em`, '--se-dropcap-font': drop, '--se-dropcap-size': `${l.dropcapSize}em`,
   };
   // The page width in pixels (not em), so the writing view and reading view agree: em would be measured against
@@ -90,85 +94,103 @@ function fill(bar: HTMLElement, project: Project) {
   };
   const font = (g: HTMLElement, label: string, key: 'font' | 'dropcapFont', list: string[]) => {
     const w = g.createEl('label', { cls: 'se-look-f se-look-font' }); w.createSpan({ text: label });
-    const i = w.createEl('input'); i.value = String(l[key]); i.placeholder = 'Any installed font';
+    const i = w.createEl('input'); i.type = 'text'; i.value = String(l[key]); i.placeholder = 'Any Installed Font';
     const dl = w.createEl('datalist'); dl.id = `se-fonts-${key}-${Math.random().toString(36).slice(2)}`; for (const f of list) dl.createEl('option').value = f; i.setAttribute('list', dl.id);
     i.onchange = () => set({ [key]: i.value.trim() || M.DEFAULT_LOOK[key] } as Partial<M.BookLook>);
     
   };
+  // Controls that belong together sit in a set, and a set moves to the next line as a whole when the panel gets narrow.
+  const cluster = (g: HTMLElement) => g.createDiv('se-look-set');
   const book = group('Book', 'These go into reading view, printing and PDF export too.');
-  font(book, 'Font', 'font', FONTS);
-  num(book, 'Size', 'size', 0.5, 8, 40, 'px');
-  num(book, 'Line spacing', 'lineHeight', 0.05, 1, 3, '');
-  num(book, 'Paragraph gap', 'paraSpace', 0.1, 0, 3, 'em');
-  num(book, 'Indent', 'indent', 0.05, 0, 2, 'in');
-  num(book, 'Title size', 'titleSize', 0.1, 0.8, 5, 'em');
+  const text = cluster(book);
+  font(text, 'Font', 'font', FONTS);
+  num(text, 'Size', 'size', 0.5, 8, 40, 'pt');
+  const spacing = cluster(book);
+  num(spacing, 'Line Spacing', 'lineHeight', 0.05, 1, 3, '');
+  num(spacing, 'Paragraph Gap', 'paraSpace', 0.1, 0, 3, 'em');
+  num(spacing, 'Indent', 'indent', 0.05, 0, 2, 'in');
+  num(cluster(book), 'Title Size', 'titleSize', 0.1, 0.8, 5, 'em');
   // Drop cap: on or off for the whole story; its font and size only matter when it's on.
-  const dcw = book.createEl('label', { cls: 'se-look-f se-look-check' });
-  const dc = dcw.createEl('input'); dc.type = 'checkbox'; dc.checked = l.dropcap; dcw.createSpan({ text: 'Drop cap' });
-  const before = book.childElementCount;
-  font(book, 'Font', 'dropcapFont', DROPCAP_FONTS);
-  num(book, 'Size', 'dropcapSize', 0.1, 1, 8, 'em');
-  const dcRows = Array.from(book.children).slice(before) as HTMLElement[];
+  const dcSet = cluster(book);
+  const dcw = dcSet.createEl('label', { cls: 'se-look-f se-look-check' });
+  const dc = dcw.createEl('input'); dc.type = 'checkbox'; dc.checked = l.dropcap; dcw.createSpan({ text: 'Drop Cap' });
+  const before = dcSet.childElementCount;
+  font(dcSet, 'Font', 'dropcapFont', DROPCAP_FONTS);
+  num(dcSet, 'Size', 'dropcapSize', 0.1, 1, 8, 'em');
+  const dcRows = Array.from(dcSet.children).slice(before) as HTMLElement[];
   const showDc = (on: boolean) => dcRows.forEach(r => { r.toggleClass('is-off', !on); r.querySelectorAll('input').forEach(i => { i.disabled = !on; }); });
   showDc(l.dropcap);
   dc.onchange = () => { set({ dropcap: dc.checked }); showDc(dc.checked); };
-  const scr = group('Screen only', 'Only how it looks while you write.');
-  num(scr, 'Page width', 'pageWidth', 1, 20, 120, 'em');
+  const scr0 = group('Screen Only', 'Only how it looks while you write.');
+  const scr = cluster(scr0);
+  num(scr, 'Page Width', 'pageWidth', 1, 20, 120, 'em');
   const za = (bar as any).__actions as LookActions | undefined;
   if (za) {
     const w = scr.createEl('label', { cls: 'se-look-f' }); w.createSpan({ text: 'Zoom' });
-    const i = w.createEl('input', { cls: 'se-look-zoom' }); i.type = 'number'; i.step = '10'; i.min = '50'; i.max = '300'; i.value = String(Math.round(za.zoom() * 100));
-    i.oninput = () => { const v = Number(i.value); if (Number.isFinite(v) && v >= 50 && v <= 300) za.setZoom(v / 100); };
+    const i = w.createEl('input', { cls: 'se-look-zoom' }); i.type = 'number'; i.step = '10'; i.min = '30'; i.max = '300'; i.value = String(Math.round(za.zoom() * 100));
+    i.oninput = () => { const v = Number(i.value); if (Number.isFinite(v) && v >= 30 && v <= 300) za.setZoom(v / 100); };
     w.createSpan({ cls: 'se-look-u', text: '%' });
   }
-  const cw = scr.createEl('label', { cls: 'se-look-f' }); cw.createSpan({ text: 'Text colour' });
+  const cw = cluster(scr0).createEl('label', { cls: 'se-look-f' }); cw.createSpan({ text: 'Text Colour' });
   const ci = cw.createEl('input'); ci.type = 'color'; ci.value = l.color || '#dcddde'; ci.oninput = () => set({ color: ci.value });
-  if (l.color) { const r = cw.createEl('button', { cls: 'se-look-reset', text: 'theme' }); r.onclick = e => { e.preventDefault(); set({ color: '' }); fill(bar, project); }; }
+  if (l.color) { const r = cw.createEl('button', { cls: 'se-look-reset', text: 'Use Theme' }); r.onclick = e => { e.preventDefault(); set({ color: '' }); fill(bar, project); }; }
   const paper = group('Paper', '');
   const colour = (g: HTMLElement, label: string, key: 'paperBg' | 'paperText') => {
     const w = g.createEl('label', { cls: 'se-look-f' }); w.createSpan({ text: label });
     const i = w.createEl('input'); i.type = 'color'; i.value = l[key]; i.oninput = () => set({ [key]: i.value } as Partial<M.BookLook>);
   };
-  colour(paper, 'Page', 'paperBg');
-  colour(paper, 'Text', 'paperText');
+  const pset = cluster(paper);
+  colour(pset, 'Page', 'paperBg');
+  colour(pset, 'Text', 'paperText');
   // Paragraph styles: right-click a paragraph → Style to use one.
   const sg = group('Styles', '');
   sg.addClass('se-look-styles');
   const save = (st: M.ParaStyle, patch: Partial<M.ParaStyle>) => set({ styles: l.styles.map(x => x.id === st.id ? { ...x, ...patch } : x) });
   if (!l.styles.length) sg.createSpan({ cls: 'se-look-u', text: 'None yet. Right-click a paragraph → New style…' });
-  for (const st of l.styles) {
-    const row = sg.createDiv('se-look-style'); row.dataset.style = st.id;
-    const name = row.createEl('input', { cls: 'se-look-sname' }); name.value = st.name;
+  // One style at a time: its name box has the list of styles under the arrow; pick one and the controls show it.
+  const chosen = l.styles.find(x => x.id === (bar as any).__style) ?? l.styles[0];
+  if (chosen) {
+    const st = chosen;
+    const row0 = sg.createDiv('se-look-style'); row0.dataset.style = st.id;
+    let row = row0.createDiv('se-look-set');
+    const pick = row.createDiv('se-look-spick');
+    const arrow = pick.createEl('button', { cls: 'se-look-sarrow' }); setIcon(arrow, 'chevron-down'); tip(arrow, 'All Styles');
+    menuButton(arrow, () => {
+      const menu = new Menu();
+      for (const x of l.styles) menu.addItem(i => i.setTitle(x.name).setChecked(x.id === st.id).onClick(() => { (bar as any).__style = x.id; fill(bar, project); }));
+      return menu;
+    }, menu => { const r = pick.getBoundingClientRect(); menu.showAtPosition({ x: r.left, y: r.bottom + 4 }); });
+    const name = pick.createEl('input', { cls: 'se-look-sname' }); name.type = 'text'; name.value = st.name; tip(name, 'Style Name');
     name.onchange = () => { const v = name.value.trim(); if (v) save(st, { name: v }); else name.value = st.name; };
-    const c1 = row.createEl('input', { cls: 'se-look-sc' }); c1.type = 'color'; c1.value = st.color; c1.oninput = () => save(st, { color: c1.value });
-    const c2 = row.createEl('input', { cls: 'se-look-spc' }); c2.type = 'color'; c2.value = st.paperColor; c2.oninput = () => save(st, { paperColor: c2.value });
-    const it = row.createEl('button', { cls: `se-look-si ${st.italic ? 'is-on' : ''}`, text: 'I' }); it.onclick = () => { save(st, { italic: !st.italic }); fill(bar, project); };
-    const al = row.createEl('select', { cls: 'dropdown se-look-sa' }); for (const [v, t] of [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']]) al.createEl('option', { text: t, value: v }); al.value = st.align;
+    const c1 = row.createEl('input', { cls: 'se-look-sc' }); c1.type = 'color'; c1.value = st.color; tip(c1, 'Colour While Writing'); c1.oninput = () => save(st, { color: c1.value });
+    const c2 = row.createEl('input', { cls: 'se-look-spc' }); c2.type = 'color'; c2.value = st.paperColor; tip(c2, 'Colour on Paper and in Exports'); c2.oninput = () => save(st, { paperColor: c2.value });
+    const it = row.createEl('button', { cls: `se-look-si ${st.italic ? 'is-on' : ''}`, text: 'I' }); tip(it, 'Italic'); it.onclick = () => { save(st, { italic: !st.italic }); fill(bar, project); };
+    const al = row.createEl('select', { cls: 'dropdown se-look-sa' }); for (const [v, t] of [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']]) al.createEl('option', { text: t, value: v }); al.value = st.align; tip(al, 'Alignment');
     al.onchange = () => save(st, { align: al.value as M.ParaStyle['align'] });
-    const sz = row.createEl('input', { cls: 'se-look-ss' }); sz.type = 'number'; sz.step = '0.05'; sz.min = '0.5'; sz.max = '3'; sz.value = String(st.size);
+    row = row0.createDiv('se-look-set');
+    const sz = row.createEl('input', { cls: 'se-look-ss' }); sz.type = 'number'; sz.step = '0.05'; sz.min = '0.5'; sz.max = '3'; sz.value = String(st.size); tip(sz, 'Size, Times the Text Size');
     sz.oninput = () => { const v = Number(sz.value); if (Number.isFinite(v) && v >= 0.5 && v <= 3) save(st, { size: v }); };
     row.createSpan({ cls: 'se-look-u', text: '×' }).addClass('se-look-ssu');
     const space = (key: 'spaceBefore' | 'spaceAfter', mark: string) => {
       const w = row.createEl('label', { cls: 'se-look-sp' }); w.createSpan({ cls: 'se-look-u', text: mark });
-      const i = w.createEl('input', { cls: 'se-look-ss' }); i.type = 'number'; i.step = '0.5'; i.min = '0'; i.max = '10'; i.value = String(st[key]);
+      const i = w.createEl('input', { cls: 'se-look-ss' }); i.type = 'number'; i.step = '0.5'; i.min = '0'; i.max = '10'; i.value = String(st[key]); tip(w, key === 'spaceBefore' ? 'Lines of Space Before' : 'Lines of Space After');
       i.oninput = () => { const v = Number(i.value); if (Number.isFinite(v) && v >= 0 && v <= 10) save(st, { [key]: v }); };
     };
     space('spaceBefore', '↑'); space('spaceAfter', '↓');
     const del = row.createEl('button', { cls: 'se-look-reset se-look-sdel', text: 'Delete' });
-    del.onclick = () => { if (!del.hasClass('is-sure')) { del.addClass('is-sure'); del.setText('Confirm'); window.setTimeout(() => { if (del.isConnected) { del.removeClass('is-sure'); del.setText('Delete'); } }, 4000); return; } set({ styles: l.styles.filter(x => x.id !== st.id) }); fill(bar, project); };
+    del.onclick = () => { if (!del.hasClass('is-sure')) { del.addClass('is-sure'); del.setText('Confirm'); window.setTimeout(() => { if (del.isConnected) { del.removeClass('is-sure'); del.setText('Delete'); } }, 4000); return; } set({ styles: l.styles.filter(x => x.id !== st.id) }); (bar as any).__style = undefined; fill(bar, project); };
   }
-  if (l.styles.length) { const k = sg.createDiv('se-look-skey'); k.setText('Name · writing colour · paper colour · italic · alignment · size · lines of space before ↑ and after ↓'); }
   const actions = (bar as any).__actions as LookActions | undefined;
   if (actions) {
     const ex = group('Export', '');
     ex.createEl('button', { cls: 'se-look-ex', text: 'E-book (EPUB)…' }).onclick = () => actions.exportBook('epub');
     ex.createEl('button', { cls: 'se-look-ex', text: 'Word (.docx)…' }).onclick = () => actions.exportBook('docx');
     ex.createEl('button', { cls: 'se-look-ex', text: 'PDF…' }).onclick = () => actions.exportBook('pdf');
-    ex.createEl('button', { cls: 'se-look-ex', text: 'Copy chapter for web' }).onclick = () => actions.copyForWeb((bar as any).__view);
+    ex.createEl('button', { cls: 'se-look-ex', text: 'Copy Chapter for Web' }).onclick = () => actions.copyForWeb((bar as any).__view);
   }
   const acts = panel.createDiv('se-look-acts');
-  const reset = acts.createEl('button', { text: 'Reset all' }); reset.onclick = () => {
+  const reset = acts.createEl('button', { text: 'Reset All' }); reset.onclick = () => {
     // A second click within a few seconds: the font, sizes and spacing go back to the defaults (styles and colours stay).
-    if (!reset.hasClass('is-sure')) { reset.addClass('is-sure'); reset.setText('Confirm'); window.setTimeout(() => { if (reset.isConnected) { reset.removeClass('is-sure'); reset.setText('Reset all'); } }, 4000); return; } const { styles: _s, paper: _p, paperBg: _b, paperText: _t, ...type } = M.DEFAULT_LOOK; set(type); fill(bar, project); };   // typography only: styles and paper stay
+    if (!reset.hasClass('is-sure')) { reset.addClass('is-sure'); reset.setText('Confirm'); window.setTimeout(() => { if (reset.isConnected) { reset.removeClass('is-sure'); reset.setText('Reset All'); } }, 4000); return; } const { styles: _s, paper: _p, paperBg: _b, paperText: _t, ...type } = M.DEFAULT_LOOK; set(type); fill(bar, project); };   // typography only: styles and paper stay
   const close = acts.createEl('button', { text: 'Done' }); close.onclick = () => { bar.removeClass('is-open'); fill(bar, project); bar.closest('.workspace-leaf-content, .view-content-wrap')?.querySelector('.se-look-aa')?.removeClass('is-active'); };
 }

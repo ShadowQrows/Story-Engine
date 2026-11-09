@@ -6,7 +6,7 @@ import { App, Modal, Notice, TFile, normalizePath } from 'obsidian';
 import * as M from './model';
 import type { Project } from './project';
 import { tip } from './tip';
-import { buildDocx, buildEpub, buildPrintHtml, chapterBlocks, Chapter, DropCapFit, webChapter } from './book';
+import { buildDocx, buildEpub, buildPrintHtml, chapterBlocks, Chapter, DOCX_IMAGE, DropCapFit, imageSize, Media, webChapter } from './book';
 import baskerville from '../fonts/LibreBaskerville.woff2';
 import baskervilleItalic from '../fonts/LibreBaskerville-Italic.woff2';
 import blackletter from '../fonts/UnifrakturMaguntia.woff2';
@@ -14,10 +14,44 @@ import baskervilleTtf from '../fonts/LibreBaskerville.ttf';
 import baskervilleItalicTtf from '../fonts/LibreBaskerville-Italic.ttf';
 import blackletterTtf from '../fonts/UnifrakturMaguntia.ttf';
 
-export async function storyChapters(app: App, p: Project): Promise<Chapter[]> {
-  const out: Chapter[] = [];
-  for (const f of p.chapters()) out.push(chapterBlocks(await app.vault.cachedRead(f), p.chapterTitle(f)));
-  return out;
+const MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', avif: 'image/avif', bmp: 'image/bmp' };
+/** What didn't make it into the book, counted for the message after an export. */
+export interface Missed { images: number; missing: number; unsupported: number; tables: number; code: number }
+
+/** Every chapter, parsed for the book; with `images`, the pictures they show are read from the vault. */
+export async function storyChapters(app: App, p: Project, images = false): Promise<{ chapters: Chapter[]; media: Map<string, Media>; missed: Missed }> {
+  const chapters: Chapter[] = [], media = new Map<string, Media>();
+  const missed: Missed = { images: 0, missing: 0, unsupported: 0, tables: 0, code: 0 };
+  for (const f of p.chapters()) {
+    const ch = chapterBlocks(await app.vault.cachedRead(f), p.chapterTitle(f), { images });
+    if (ch.left) { missed.images += ch.left.images; missed.tables += ch.left.tables; missed.code += ch.left.code; }
+    const kept: typeof ch.blocks = [];
+    for (const b of ch.blocks) {
+      if (b.type !== 'image') { kept.push(b); continue; }
+      let ref = b.ref; try { ref = decodeURIComponent(ref); } catch { /* keep as written */ }
+      const file = app.metadataCache.getFirstLinkpathDest(ref.split('#')[0], f.path);
+      if (!file) { missed.missing++; continue; }
+      if (!media.has(file.path)) {
+        const data = new Uint8Array(await app.vault.readBinary(file)), ext = file.extension.toLowerCase();
+        const size = imageSize(data) ?? { w: 800, h: 600 };
+        media.set(file.path, { data, mime: MIME[ext] ?? 'image/png', ext, w: size.w, h: size.h });
+      }
+      kept.push({ ...b, ref: file.path });
+    }
+    chapters.push({ ...ch, blocks: kept });
+  }
+  return { chapters, media, missed };
+}
+/** "3 pictures, 1 table" — the parts left out, in plain words, or '' when nothing was. */
+function missedText(m: Missed, imagesOn: boolean) {
+  const n = (k: number, one: string, many: string) => k ? `${k} ${k === 1 ? one : many}` : '';
+  const parts = [
+    imagesOn ? '' : n(m.images, 'picture (Include images is off)', 'pictures (Include images is off)'),
+    n(m.missing, 'picture not found in the vault', 'pictures not found in the vault'),
+    n(m.unsupported, 'picture of a kind Word can’t show (use PNG, JPG or GIF)', 'pictures of a kind Word can’t show (use PNG, JPG or GIF)'),
+    n(m.tables, 'table', 'tables'), n(m.code, 'code block', 'code blocks'),
+  ].filter(Boolean);
+  return parts.join(', ');
 }
 const uuid = () => (crypto as Crypto & { randomUUID?: () => string }).randomUUID?.() ?? 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16));
 const safeName = (s: string) => s.replace(/[\\/:*?"<>|#^[\]]+/g, ' ').replace(/\s+/g, ' ').trim() || 'Book';
@@ -60,54 +94,68 @@ export class BookExportModal extends Modal {
     this.modalEl.addClass('se-export-modal');
     this.titleEl.setText(this.format === 'epub' ? 'Export e-book (EPUB)' : this.format === 'pdf' ? 'Export PDF' : 'Export Word document');
     const c = this.contentEl; c.empty();
-    const field = (label: string, value: string, ph = '') => { const r = c.createDiv('se-style-row'); r.createSpan({ text: label }); const i = r.createEl('input'); i.value = value; i.placeholder = ph; return i; };
+    const field = (label: string, value: string, ph = '') => { const r = c.createDiv('se-style-row'); r.createSpan({ text: label }); const i = r.createEl('input'); i.type = 'text'; i.value = value; i.placeholder = ph; return i; };
     const title = field('Title', book.title || p.name);
     const author = field('Author', book.author || '', 'Your name');
     const lang = field('Language', book.language || 'en', 'en');
     // Page size: the printed book's (an e-book has none: e-readers make their own pages).
     let size: HTMLSelectElement | null = null;
     if (this.format !== 'epub') {
-      const r = c.createDiv('se-style-row'); r.createSpan({ text: 'Page size' });
+      const r = c.createDiv('se-style-row'); r.createSpan({ text: 'Page Size' });
       size = r.createEl('select', { cls: 'dropdown' });
       for (const [id, s] of Object.entries(M.PAGE_SIZES)) size.createEl('option', { text: s.label, value: id });
       size.value = M.PAGE_SIZES[book.pageSize ?? ''] ? book.pageSize! : '6x9';
     }
-    // PDF for a printed book: a wider margin on the binding side, which alternates between left and right pages.
+    // PDF or Word for a printed book: a wider margin on the binding side, which alternates between left and right pages.
     let mirror: HTMLInputElement | null = null;
-    if (this.format === 'pdf') {
+    if (this.format !== 'epub') {
       const r = c.createEl('label', { cls: 'se-style-row se-check' });
       mirror = r.createEl('input'); mirror.type = 'checkbox'; mirror.checked = !!book.mirror;
-      r.appendText(' Mirrored margins (for a printed book)');
+      r.appendText(' Mirrored Margins');
       tip(r, 'Leave off for reading on screen: every page lines up. On for printing: room for the binding, on alternating sides.');
     }
-    c.createDiv({ cls: 'se-export-where', text: `${p.chapters().length} chapters · saved in ${p.folder ? p.folder + '/' : ''}Exports` });
+    const ir = c.createEl('label', { cls: 'se-style-row se-check' });
+    const images = ir.createEl('input'); images.type = 'checkbox'; images.checked = book.images !== false;
+    ir.appendText(' Include Images');
     const acts = c.createDiv('se-style-acts');
     const go = acts.createEl('button', { cls: 'mod-cta', text: 'Export' });
+    tip(go, `${p.chapters().length} chapters, saved in ${p.folder ? p.folder + '/' : ''}Exports`);
     go.onclick = async () => {
-      const info: M.BookInfo = { title: title.value.trim() || p.name, author: author.value.trim(), language: lang.value.trim() || 'en', pageSize: size?.value ?? book.pageSize, ...(mirror ? (mirror.checked ? { mirror: true } : {}) : book.mirror ? { mirror: true } : {}) };
+      const info: M.BookInfo = { title: title.value.trim() || p.name, author: author.value.trim(), language: lang.value.trim() || 'en', pageSize: size?.value ?? book.pageSize, ...(mirror ? (mirror.checked ? { mirror: true } : {}) : book.mirror ? { mirror: true } : {}), ...(images.checked ? {} : { images: false }) };
       p.data.book = info; p.saveQuiet();
       go.disabled = true; go.setText('Exporting…');
       try {
-        const path = await exportBook(this.app, p, this.format, info);
-        if (path) new Notice(`Saved ${path}`);
+        const done = await exportBook(this.app, p, this.format, info);
+        if (done) new Notice(done.left ? `Saved ${done.path}
+Left out: ${done.left}.` : `Saved ${done.path}`, done.left ? 10000 : 5000);
         this.close();
-      } catch (e) { new Notice(`Export failed: ${(e as Error).message}`); go.disabled = false; go.setText('Export'); }
+      } catch (e) { new Notice(exportError(e, `${safeName(info.title)}.${this.format}`), 10000); go.disabled = false; go.setText('Export'); }
     };
   }
   onClose() { this.contentEl.empty(); }
 }
+/** An export error in plain words: the usual one is the old copy still open in Word, LibreOffice or a PDF reader. */
+function exportError(e: unknown, file: string) {
+  const msg = (e as Error)?.message ?? String(e);
+  if (/EBUSY|EPERM|EACCES|locked|being used/i.test(msg)) return `Couldn't replace “${file}”: it's open in another program. Close it there and export again.`;
+  if (/ENOSPC/i.test(msg)) return `Couldn't save “${file}”: the disk is full.`;
+  return `Export failed: ${msg}`;
+}
 const firstLetter = (chapters: Chapter[]) => { for (const c of chapters) for (const b of c.blocks) if (b.type === 'p' && b.dropcap) return [...(b.lines[0]?.[0]?.t ?? '')][0] ?? ''; return ''; };
-export async function exportBook(app: App, p: Project, format: 'epub' | 'docx' | 'pdf', info: M.BookInfo): Promise<string | null> {
-  const chapters = await storyChapters(app, p);
+export async function exportBook(app: App, p: Project, format: 'epub' | 'docx' | 'pdf', info: M.BookInfo): Promise<{ path: string; left: string } | null> {
+  const imagesOn = info.images !== false;
+  const { chapters, media, missed } = await storyChapters(app, p, imagesOn);
+  if (format === 'docx') for (const c of chapters) for (const b of c.blocks) if (b.type === 'image' && !DOCX_IMAGE.test(media.get(b.ref)?.mime ?? '')) missed.unsupported++;
+  const left = missedText(missed, imagesOn);
   const meta = { ...info, id: uuid(), modified: new Date() };
   if (format === 'pdf') {
-    const html = buildPrintHtml(meta, chapters, p.data.look, { text: baskerville, italic: baskervilleItalic, blackletter });
+    const html = buildPrintHtml(meta, chapters, p.data.look, { text: baskerville, italic: baskervilleItalic, blackletter }, media);
     const pdf = await printToPdf(html);
     if (!pdf) return null;   // no print engine here (e.g. on a phone): the print dialog was shown instead
-    return save(app, p, `${safeName(info.title)}.pdf`, pdf);
+    return { path: await save(app, p, `${safeName(info.title)}.pdf`, pdf), left };
   }
-  const data = format === 'epub' ? buildEpub(meta, chapters, p.data.look, { text: baskerville, italic: baskervilleItalic, blackletter }) : buildDocx(meta, chapters, p.data.look, { text: baskervilleTtf, italic: baskervilleItalicTtf, blackletter: blackletterTtf }, fitDropCap(p.data.look, firstLetter(chapters)));
-  return save(app, p, `${safeName(info.title)}.${format}`, data);
+  const data = format === 'epub' ? buildEpub(meta, chapters, p.data.look, { text: baskerville, italic: baskervilleItalic, blackletter }, media) : buildDocx(meta, chapters, p.data.look, { text: baskervilleTtf, italic: baskervilleItalicTtf, blackletter: blackletterTtf }, fitDropCap(p.data.look, firstLetter(chapters)), media);
+  return { path: await save(app, p, `${safeName(info.title)}.${format}`, data), left };
 }
 
 /**
