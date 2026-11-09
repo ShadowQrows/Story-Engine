@@ -6,7 +6,7 @@ Write your chapters in Obsidian with a book layout, and build your world from th
 
 ![A chapter in the book layout next to the World view: the map, the pieces and the timeline](docs/images/1-overview.jpg)
 
-*Write on the left; the World view on the right shows where everyone is in the scene you're on. The scene bar above each scene sets its POV, when and where.*
+*Write on the left; the World view on the right shows where everyone is in the scene you're on. The scene bar above each scene sets its POV and when; where comes from the map.*
 
 ![Inside Winterfell: characters at their spots, an event flag, connection lines and a character's card](docs/images/2-inside-map.jpg)
 
@@ -14,8 +14,8 @@ Write your chapters in Obsidian with a book layout, and build your world from th
 
 | Highlight a name to add it | The timeline |
 |---|---|
-| ![The capture box after highlighting a word in a chapter](docs/images/3-capture.jpg) | ![The timeline: moments, a time skip, scenes at the same time, events and story lines](docs/images/4-timeline.jpg) |
-| *Pick what it is; a description, connections and where it is can follow.* | *Named moments, time skips, parallel scenes, events and each POV character's path between places. Drag scenes, events and moments to change them.* |
+| ![The capture box after highlighting a word in a chapter](docs/images/3-capture.jpg) | ![The timeline: dates, a time skip, scene boxes with their events and cast, and Find showing Bran's scenes](docs/images/4-timeline.jpg) |
+| *Pick what it is; a description, connections and where it is can follow.* | *Dates, time skips, scenes at the same time, and each scene's events and cast. Find lights up the scenes a character is in. Drag scenes, events and dates to change them.* |
 
 ![The book look's settings and a chapter on paper](docs/images/5-paper.jpg)
 

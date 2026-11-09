@@ -118,7 +118,7 @@ export class Capture {
       b.dataset.type = t.id; b.style.setProperty('--se-c', t.color);
       b.append(el('span', 'se-sw'), document.createTextNode(t.label)); grid.append(b);
     }
-    const add = this.button('New type', () => {
+    const add = this.button('New Type', () => {
       if (grid.querySelector('.se-inline')) return;
       const row = el('div', 'se-inline'); const input = el('input'); input.placeholder = 'Type Name';
       const kind = el('select', 'dropdown'); for (const [v, l] of M.BEHAVIOURS) { const o = el('option', '', l); o.value = v; kind.append(o); }
@@ -185,8 +185,8 @@ export class Capture {
       void this.create(n, t, name && name !== n && !manual ? [name] : [], passage);
     });
     const nodes: (Node | false)[] = [this.header(manual ? 'New Piece' : passage ? 'Add This Passage as…' : 'Add to Your World'), nameInput];
-    if (name && !manual) nodes.push(el('div', 'se-small', `Change the name if the text uses a nickname. “${name}” is kept as another name for it.`));
-    if (passage) nodes.push(el('div', 'se-small', 'The highlighted passage becomes its description.'));
+    if (name && !manual) tip(nameInput, `Name\nChange it if the text uses a nickname\n“${name}” is kept as another name for it`);
+    else if (passage) tip(nameInput, 'Name\nThe highlighted passage becomes its description');
     nodes.push(grid);
     if (name && !manual && project.pieces.size) { const row = el('div', 'se-acts'); row.append(this.button('Another Name for…', () => this.aliasMenu(name), 'se-btn se-btn-ghost se-btn-small se-left')); nodes.push(row); }
     this.render(nodes);
