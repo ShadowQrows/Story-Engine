@@ -1,10 +1,12 @@
-import { App, Events, MarkdownPostProcessorContext, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath } from 'obsidian';
+import { App, Events, MarkdownPostProcessorContext, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath, setIcon } from 'obsidian';
 import { Project, DATA_FILE } from './project';
 import * as M from './model';
 import { Capture } from './capture';
-import { storyEditorExtensions, refreshEditors } from './editor';
+import { tip } from './tip';
+import { storyEditorExtensions, refreshEditors, setCaretReady, toggleWrap } from './editor';
 import { WorldView, WORLD_VIEW, FolderPicker } from './world';
-import { classify, classesFor, gapBefore, LineKind, stylesOf, toLinePerParagraph } from './manuscript';
+import { classify, classesFor, gapBefore, LineKind, STYLE_MARK, stylesOf, toLinePerParagraph } from './manuscript';
+import { EditorView } from '@codemirror/view';
 import { applyVars, ensureLookbar, LookActions, lookVars, SCREEN_SCALE, printCss, removeLookbar, styleRules, toggleLookbar } from './look';
 import { addStyleItems } from './styles';
 import { BookExportModal, copyChapterForWeb } from './export';
@@ -68,6 +70,9 @@ export default class StoryEnginePlugin extends Plugin {
     this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, info) => {
       const f = info.file, p = f && this.projectFor(f.path);
       if (f && p?.isChapter(f)) addStyleItems(this.app, menu, editor, p);
+      // A long highlight doesn't open the capture box by itself (so it can be formatted); this does.
+      const sel = editor.getSelection();
+      if (f && p && sel.trim()) menu.addItem(i => i.setTitle('Add to World…').setIcon('plus').onClick(() => void this.capture.onSelect(p, f, editor.posToOffset(editor.getCursor('from')), { text: sel, rect: this.cursorRect(), file: f }, true)));
     }));
     for (const ev of ['layout-change', 'active-leaf-change', 'file-open'] as const) this.registerEvent(this.app.workspace.on(ev as 'layout-change', () => this.applyLooksSoon()));
 
@@ -95,13 +100,22 @@ export default class StoryEnginePlugin extends Plugin {
             const out = parts.map((g, k) => { const p = document.createElement('p'); for (const n of g) p.appendChild(n); look(p, lines[k]); return p; });
             block.replaceWith(...out);
           } else look(block, lines[0]);
-        } else if (lines.length) look(block, lines[0]);
+        } else if (lines.length) {
+          // A hidden note on the line above (the scene settings) leaves a line break in front of the text: take it out,
+          // or the paragraph starts one line down and its drop cap can't find its first letter.
+          if (block.tagName === 'P') for (const end of ['firstChild', 'lastChild'] as const) {
+            let n = block[end];
+            while (n && (n.nodeName === 'BR' || (n.nodeType === Node.TEXT_NODE && !(n.textContent ?? '').trim()))) { const next = end === 'firstChild' ? n.nextSibling : n.previousSibling; n.remove(); n = next; }
+            if (n?.nodeType === Node.TEXT_NODE && end === 'firstChild') n.textContent = (n.textContent ?? '').replace(/^\s+/, '');
+          }
+          look(block, lines[0]);
+        }
         // Empty lines above it: that many lines of space, kept up to date (reading view doesn't redraw a block when only the empty lines around it change).
         this.gapEls.set(el, ctx); this.applyGap(el, ctx);
       } else if (block.tagName === 'P' && /^[\s✦⁂]+$/.test(block.textContent ?? '')) block.addClass('mm-line', 'mm-break');
     });
 
-    this.app.workspace.onLayoutReady(() => void this.discover());
+    this.app.workspace.onLayoutReady(() => { void this.discover(); this.takeOverFormatting(); });
     // Obsidian reads notes in the background at start-up (every note, after its index is rebuilt). A story looked at too early
     // seems empty, so look again once Obsidian has finished: always the first time, later only if a story still looks empty.
     let firstResolve = true;
@@ -158,7 +172,7 @@ export default class StoryEnginePlugin extends Plugin {
       const f = view.file, p = f && this.projectFor(f.path);
       if (!f || !p) { new Notice('This note isn\'t part of a story. Run “Story Engine: Set up a story” first.'); return; }
       const sel = editor.getSelection(); if (!sel.trim()) { this.newPieceFromCommand(); return; }
-      void this.capture.onSelect(p, f, editor.posToOffset(editor.getCursor('from')), { text: sel, rect: this.cursorRect(), file: f });
+      void this.capture.onSelect(p, f, editor.posToOffset(editor.getCursor('from')), { text: sel, rect: this.cursorRect(), file: f }, true);
     } });
     this.addCommand({ id: 'new-story', name: 'Set up a story', callback: () => this.newStory() });
     this.addCommand({ id: 'new-chapter', name: 'New Chapter', callback: () => this.newChapter() });
@@ -234,13 +248,14 @@ export default class StoryEnginePlugin extends Plugin {
   /** Chapters open in Reading view: draw them again, so a page drawn before the plugin was ready gets the book look. */
   redrawReading() {
     for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
-      const v = leaf.view; if (!(v instanceof MarkdownView) || v.getMode() !== 'preview') continue;
+      // Chapters open in editing too: their hidden reading page was drawn without the book look while the plugin was off.
+      const v = leaf.view; if (!(v instanceof MarkdownView)) continue;
       const f = v.file, p = f && this.projectFor(f.path);
       if (!f || !p?.isChapter(f)) continue;
       // rerender() alone keeps the page it drew before; clearing it first makes it draw (and style) every paragraph again.
       const r = (v.previewMode as unknown as { renderer?: { clear?: () => void; set?: (text: string) => void } }).renderer, top = v.previewMode.getScroll();
       if (r?.clear && r.set) { r.clear(); r.set(v.data); } else v.previewMode.rerender(true);
-      window.setTimeout(() => v.previewMode.applyScroll(top), 50);
+      if (v.getMode() === 'preview') window.setTimeout(() => v.previewMode.applyScroll(top), 50);
     }
   }
   projectFor(path: string): Project | null {
@@ -290,7 +305,12 @@ export default class StoryEnginePlugin extends Plugin {
       this.worldButton(v, worldOpen);
       const f = v.file, p = f && this.projectFor(f.path);
       if (f && p?.isChapter(f)) {
-        ensureLookbar(v, p, this.lookActions(p)); this.addHeaderButtons(v, p); syncChapters(v, p, this.chaptersOpen, () => { this.chaptersOpen = !this.chaptersOpen; this.applyLooks(); });
+        ensureLookbar(v, p, this.lookActions(p)); this.addHeaderButtons(v, p); syncChapters(v, p, this.chaptersOpen, () => { this.chaptersOpen = !this.chaptersOpen; this.applyLooks(); }, () => this.newScene(v, p));
+        // Switching from reading to editing: the cursor where you were reading.
+        const vm = v as unknown as { __seMode?: string }, mode = v.getMode();
+        if (vm.__seMode === 'preview' && mode === 'source') this.caretAtReading(v);
+        if (mode === 'preview') this.watchReading(v);
+        vm.__seMode = mode;
         syncZoom(v, this.settings.draftZoom, () => this.setDraftZoom(1));
         applyVars(v.containerEl, lookVars(p.data.look, true, this.settings.draftZoom));
         v.containerEl.toggleClass('se-paper', p.data.look.paper);
@@ -330,7 +350,21 @@ export default class StoryEnginePlugin extends Plugin {
     paper.addClass('se-paper-btn');
     const look = v.addAction('type', 'Book look', () => { toggleLookbar(v); this.applyLooks(); });
     look.addClass('se-look-aa'); look.empty(); look.setText('Aa');
-    k.__seButtons = [look, paper]; k.__sePaper = paper;
+    // Bold, Italic, Strikethrough: always in the middle of the header (the marks themselves are hidden in chapters).
+    const header = (v as unknown as { headerEl?: HTMLElement }).headerEl ?? v.containerEl.querySelector('.view-header') as HTMLElement;
+    const fmt = header.createDiv('se-fmt-bar');
+    for (const [ic, label, keys, mark] of [['bold', 'Bold', 'Ctrl+B', '**'], ['italic', 'Italic', 'Ctrl+I', '*'], ['strikethrough', 'Strikethrough', '', '~~']] as const) {
+      const b = fmt.createEl('button', { cls: 'clickable-icon se-fmt' }); setIcon(b, ic); b.setAttribute('aria-label', label);
+      tip(b, keys ? `${label}\n${keys}` : label);
+      b.addEventListener('mousedown', e => e.preventDefault());   // keep the selection in the chapter
+      b.onclick = e => { e.preventDefault(); this.formatIn(v, mark); };
+    }
+    k.__seButtons = [look, paper, fmt]; k.__sePaper = paper;
+  }
+  /** Bold, italic or strikethrough on the selection (or the word at the cursor). In reading view, it switches to editing first. */
+  private formatIn(v: MarkdownView, mark: '**' | '*' | '~~') {
+    if (v.getMode() !== 'source') { void v.setState({ ...v.getState(), mode: 'source' }, { history: false }); return; }
+    const cm = (v.editor as unknown as { cm?: EditorView }).cm; if (cm) toggleWrap(cm, mark);
   }
   private removeHeaderButtons(v: MarkdownView) {
     const k = v as unknown as { __seButtons?: HTMLElement[] };
@@ -348,6 +382,97 @@ export default class StoryEnginePlugin extends Plugin {
     const leaf = notes.find(l => l.view instanceof MarkdownView && l.view.file && this.projectFor(l.view.file.path)?.isChapter(l.view.file)) ?? notes[0] ?? this.app.workspace.getLeaf('tab');
     await leaf.openFile(first);
     if (leaf.view instanceof MarkdownView) placeCaret(leaf.view, true);
+  }
+  /**
+   * New Scene: a scene break at the cursor (splitting the paragraph if the cursor is inside one), the cursor on the
+   * line after it, then the new scene's POV picker.
+   */
+  newScene(v: MarkdownView, p: Project) {
+    // In reading view it switches to editing, where the cursor says where the new scene starts.
+    if (v.getMode() !== 'source') { void v.setState({ ...v.getState(), mode: 'source' }, { history: false }); return; }
+    const f = v.file, cm = (v.editor as unknown as { cm?: EditorView }).cm; if (!f || !cm) return;
+    const st = cm.state, head = st.selection.main.head, line = st.doc.lineAt(head);
+    const before = st.doc.sliceString(line.from, head), after = st.doc.sliceString(head, line.to), BREAK = '✦ ✦ ✦';
+    // Already at the start of a scene (nothing written in it above the cursor): a break here would leave an empty scene.
+    const all = st.doc.toString().split('\n'), here = M.scenesOf(all).filter(s => s.startLine < line.number - 1).pop();
+    const textAbove = here ? all.slice(here.startLine + 1, line.number - 1).some((l, i) => l.trim() && here.startLine + 1 + i !== here.metaLine) : true;
+    const kindHere = classify(all)[line.number - 1];
+    if (kindHere === 'heading' || kindHere === 'break' || kindHere === 'frontmatter' || (!textAbove && !before.replace(STYLE_MARK, '').trim())) { new Notice(`This is already the start of a ${M.wordsOf(p.data).scene.toLowerCase()}.`); cm.focus(); return; }
+    let change: { from: number; to: number; insert: string }, cursor: number, breakLine: number;
+    if (!line.text.trim()) {
+      // An empty line: the break goes on it, and a fresh line below for the text.
+      change = { from: line.from, to: line.to, insert: `${BREAK}\n` }; cursor = line.from + BREAK.length + 1; breakLine = line.number - 1;
+    } else if (!after.trim()) {
+      change = { from: line.from + before.trimEnd().length, to: line.to, insert: `\n${BREAK}\n` }; cursor = change.from + BREAK.length + 2; breakLine = line.number;
+    } else if (!before.trim() || STYLE_MARK.exec(before)?.[0] === before) {
+      change = { from: line.from, to: line.from, insert: `${BREAK}\n` }; cursor = line.from + BREAK.length + 1 + before.length; breakLine = line.number - 1;
+    } else {
+      const from = line.from + before.trimEnd().length, to = head + (after.length - after.trimStart().length);
+      change = { from, to, insert: `\n${BREAK}\n` }; cursor = from + BREAK.length + 2; breakLine = line.number;
+    }
+    cm.dispatch({ changes: change, selection: { anchor: cursor }, scrollIntoView: true, userEvent: 'input' });
+    cm.focus();
+    const lines = cm.state.doc.toString().split('\n'), scene = M.scenesOf(lines).find(s => s.startLine === breakLine);
+    if (!scene) return;
+    // Once its scene bar is drawn, open the POV picker on it.
+    window.setTimeout(() => {
+      const at = cm.domAtPos(cm.state.doc.line(breakLine + 1).from).node, el = (at instanceof HTMLElement ? at : at.parentElement)?.closest('.cm-line');
+      const chip = (el?.nextElementSibling as HTMLElement | null)?.querySelector('.se-chip-pov') as HTMLElement | null;
+      this.capture.openScene(p, f, scene.index, 'pov', (chip ?? el ?? cm.contentDOM).getBoundingClientRect());
+    }, 120);
+  }
+  /**
+   * In chapters the formatting marks are hidden, which confuses Obsidian's own Bold and Italic (Ctrl+B / Ctrl+I, or
+   * whatever keys you gave them): there they do the plugin's version instead. Everywhere else they're untouched.
+   */
+  private takeOverFormatting() {
+    const cmds = (this.app as unknown as { commands?: { commands?: Record<string, { checkCallback?: (checking: boolean) => boolean | void }> } }).commands?.commands;
+    for (const [id, mark] of [['editor:toggle-bold', '**'], ['editor:toggle-italics', '*']] as const) {
+      const c = cmds?.[id], orig = c?.checkCallback; if (!c || !orig) continue;
+      c.checkCallback = (checking: boolean) => {
+        const v = this.app.workspace.getActiveViewOfType(MarkdownView), cm = v && (v.editor as unknown as { cm?: EditorView }).cm;
+        if (v?.file && cm && v.getMode() === 'source' && this.projectFor(v.file.path)?.isChapter(v.file)) { if (!checking) toggleWrap(cm, mark); return true; }
+        return orig.call(c, checking);
+      };
+      this.register(() => { c.checkCallback = orig; });
+    }
+  }
+  /** Remember how far down reading view is (Obsidian forgets it when you switch to editing). */
+  private watchReading(v: MarkdownView) {
+    const vm = v as unknown as { __seReadLine?: number; __seReadEl?: HTMLElement };
+    const el = v.contentEl.querySelector('.markdown-preview-view') as HTMLElement | null;
+    if (!el || vm.__seReadEl === el) return;
+    vm.__seReadEl = el;
+    const note = () => { if (v.getMode() === 'preview') vm.__seReadLine = v.previewMode.getScroll(); };
+    el.addEventListener('scroll', note, { passive: true }); note();
+  }
+  /**
+   * Back from reading: the page stays where you were reading, and the cursor goes to the start of the first paragraph
+   * that begins on screen. At the top of the chapter, that's the first paragraph under the title.
+   */
+  caretAtReading(v: MarkdownView) {
+    const cm = (v.editor as unknown as { cm?: EditorView }).cm; if (!cm) return;
+    const read = (v as unknown as { __seReadLine?: number }).__seReadLine ?? 0;
+    setCaretReady(cm, false);
+    const prose = (k: LineKind) => k === 'dropcap' || k === 'first' || k === 'para' || k === 'interlude';
+    const go = () => {
+      if (v.getMode() !== 'source') return;
+      const st = cm.state, kinds = classify(st.doc.toString().split('\n'));
+      const firstProse = kinds.findIndex(prose); if (firstProse < 0) return;
+      let at = firstProse;
+      if (read > firstProse) {
+        // The same spot as in reading view: the line that was at the top, as far into it as it was.
+        const n = Math.min(st.doc.lines, Math.floor(read) + 1), block = cm.lineBlockAt(st.doc.line(n).from);
+        const docOffset = cm.documentTop - cm.scrollDOM.getBoundingClientRect().top + cm.scrollDOM.scrollTop;
+        cm.scrollDOM.scrollTop = docOffset + block.top + (read - Math.floor(read)) * block.height;
+        const top = cm.scrollDOM.getBoundingClientRect().top;
+        at = kinds.findIndex((k, i) => i >= n - 1 && prose(k) && cm.documentTop + cm.lineBlockAt(st.doc.line(i + 1).from).top >= top - 2);
+        if (at < 0) at = firstProse;
+      }
+      const line = st.doc.line(at + 1);
+      cm.dispatch({ selection: { anchor: line.from + (STYLE_MARK.exec(line.text)?.[0].length ?? 0) } });
+    };
+    window.setTimeout(go, 30); window.setTimeout(() => { go(); setCaretReady(cm, true); }, 160);
   }
   /** The ribbon's map icon opens the World view, and closes it if it's already open. */
   async toggleWorld() {

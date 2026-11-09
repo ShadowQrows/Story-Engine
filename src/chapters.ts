@@ -8,11 +8,14 @@ import { NameModal } from './world';
 import type { Project } from './project';
 import * as M from './model';
 import { classify, STYLE_MARK } from './manuscript';
+import { tip } from './tip';
+import { setCaretReady } from './editor';
+import type { EditorView } from '@codemirror/view';
 
 const stripOf = (view: MarkdownView) => view.contentEl.querySelector(':scope > .se-chapters') as HTMLElement | null;
 
 /** The button and (when open) the list in a chapter view, refreshed unless you're typing or dragging in it. */
-export function syncChapters(view: MarkdownView, project: Project, open: boolean, toggle: () => void) {
+export function syncChapters(view: MarkdownView, project: Project, open: boolean, toggle: () => void, newScene?: () => void) {
   const host = view.contentEl;
   let btn = host.querySelector(':scope > .se-chapters-btn') as HTMLElement | null;
   if (!btn) {
@@ -22,6 +25,18 @@ export function syncChapters(view: MarkdownView, project: Project, open: boolean
   }
   btn.onclick = toggle;
   btn.toggleClass('is-active', open);
+  // New Scene, right under Chapters: a scene break at the cursor, then the POV picker.
+  let sb = host.querySelector(':scope > .se-scene-btn') as HTMLElement | null;
+  if (newScene) {
+    if (!sb) {
+      sb = host.createEl('button', { cls: 'se-scene-btn clickable-icon' });
+      setIcon(sb, 'separator-horizontal'); sb.setAttribute('aria-label', 'New Scene');
+      tip(sb, 'New Scene\nAdds a scene break at the cursor and asks whose POV it is');
+      sb.addEventListener('mousedown', e => e.preventDefault());   // keep the cursor where it is
+      host.append(sb);
+    }
+    sb.onclick = newScene;
+  } else sb?.remove();
   let strip = stripOf(view);
   watchFit(view);
   if (!open) { strip?.remove(); placeOverlays(view); fitPage(view); return; }
@@ -34,7 +49,7 @@ export function syncChapters(view: MarkdownView, project: Project, open: boolean
 export function removeChapters(view: MarkdownView) {
   // Stop watching the pane too: after a reload (or an update) the old watcher would keep running the old code.
   const v = view as unknown as { __seFit?: ResizeObserver }; v.__seFit?.disconnect(); delete v.__seFit;
-  stripOf(view)?.remove(); view.contentEl.querySelectorAll(':scope > .se-chapters-btn, :scope > .se-page-zoom').forEach(e => e.remove()); fitPage(view); }
+  stripOf(view)?.remove(); view.contentEl.querySelectorAll(':scope > .se-chapters-btn, :scope > .se-scene-btn, :scope > .se-page-zoom').forEach(e => e.remove()); fitPage(view); }
 
 /** The chapter zoom, shown next to the Chapters button; a click goes back to 100%. */
 export function syncZoom(view: MarkdownView, zoom: number, reset: () => void) {
@@ -50,7 +65,7 @@ function placeOverlays(view: MarkdownView) {
   const host = view.contentEl, look = host.querySelector(':scope > .se-lookbar.is-open') as HTMLElement | null;
   const top = look ? look.offsetHeight : 0;
   const at = (sel: string, y: number) => { const e = host.querySelector(`:scope > ${sel}`) as HTMLElement | null; if (e) e.style.top = `${top + y}px`; };
-  at('.se-chapters-btn', 8); at('.se-page-zoom', 14); at('.se-chapters', 44);
+  at('.se-chapters-btn', 8); at('.se-page-zoom', 14); at('.se-scene-btn', 44); at('.se-chapters', 44);
 }
 
 /**
@@ -184,7 +199,7 @@ export function placeCaret(view: MarkdownView, always = false) {
     ed.setCursor({ line: first, ch: STYLE_MARK.exec(lines[first] ?? '')?.[0].length ?? 0 });
   };
   // Obsidian puts back its own idea of the cursor a moment after opening; go after that.
-  window.setTimeout(go, 30); window.setTimeout(go, 160);
+  window.setTimeout(go, 30); window.setTimeout(() => { go(); const cm = (view.editor as unknown as { cm?: EditorView }).cm; if (cm) setCaretReady(cm, true); }, 160);
 }
 /** A new chapter opens ready to write: the cursor below its title and scene bar, not above the title. */
 export function startWriting(view: MarkdownView) { placeCaret(view, true); window.setTimeout(() => view.editor?.focus?.(), 170); }

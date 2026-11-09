@@ -10,6 +10,7 @@ import { editorInfoField, TFile } from 'obsidian';
 import { tip } from './tip';
 import { Prec, RangeSetBuilder, StateEffect, StateField, EditorState, Extension, Transaction } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType, keymap } from '@codemirror/view';
+import { syntaxTree } from '@codemirror/language';
 import { classify, classesFor, LineKind, STYLE_MARK, stylesOf } from './manuscript';
 import * as M from './model';
 import type { Project, SceneEntry } from './project';
@@ -41,6 +42,7 @@ const lineDeco = new Map<string, Decoration>();
 const deco = (cls: string) => { let d = lineDeco.get(cls); if (!d) { d = Decoration.line({ class: cls }); lineDeco.set(cls, d); } return d; };
 function docLines(state: EditorState, upto = state.doc.lines) { const out: string[] = []; for (let n = 1; n <= upto; n++) out.push(state.doc.line(n).text); return out; }
 
+const dropLetter = Decoration.mark({ class: 'mm-dc' });
 /** Each line gets its look (indent, drop cap, title, break, empty line, style) from what it is. The text and the page match one-to-one. */
 const manuscriptLines = ViewPlugin.fromClass(class {
   decorations: DecorationSet; kinds: LineKind[] = []; styles: (string | null)[] = [];
@@ -52,16 +54,22 @@ const manuscriptLines = ViewPlugin.fromClass(class {
   }
   destroy() { /* view removal is handled by the names plugin */ }
   build(view: EditorView) {
-    const b = new RangeSetBuilder<Decoration>();
+    const out: import('@codemirror/state').Range<Decoration>[] = [];
     for (const { from, to } of view.visibleRanges) {
       for (let pos = from; pos <= to;) {
         const line = view.state.doc.lineAt(pos), i = line.number - 1, st = this.styles[i];
         const cls = classesFor(this.kinds[i]) + (st ? ` se-st se-st-${st} se-st-top se-st-end` : '');
-        if (cls.trim()) b.add(line.from, line.from, deco(cls.trim()));
+        // A drop cap paragraph that starts with something hidden (a style marker, ** / * / ~~) can't use the browser's
+        // first-letter look, so the plugin marks the first letter you can see instead. Otherwise first-letter does it
+        // (that keeps the cursor its normal height at the start of the paragraph).
+        const lead = this.kinds[i] === 'dropcap' ? /^(%%style:[a-z0-9-]+%%[ \t]?)?[*_~]*/.exec(line.text)![0].length : 0;
+        const m = lead ? /^[“"‘'(\[]*\S/u.exec(line.text.slice(lead)) : null;
+        if (cls.trim()) out.push(deco(cls.trim() + (m ? ' mm-dc-line' : '')).range(line.from));
+        if (m) out.push(dropLetter.range(line.from + lead, line.from + lead + m[0].length));
         pos = line.to + 1;
       }
     }
-    return b.finish();
+    return Decoration.set(out, true);
   }
 }, { decorations: v => v.decorations });
 
@@ -98,6 +106,141 @@ const keepMarks = EditorState.transactionFilter.of(tr => {
 });
 
 const PROSE = new Set<LineKind>(['para', 'first', 'dropcap', 'interlude']);
+
+/* ───────── formatting marks (# ** *): never shown in a chapter; the Aa panel's Title, Bold and Italic (or Ctrl+B / Ctrl+I) make them ───────── */
+
+type FmtMark = { from: number; to: number; kind: 'header' | 'strong' | 'em' | 'strike'; partner: number };   // partner: index of the other half, -1 for a title's #
+const FMT = /formatting-(header|strong|em|strikethrough)(?:_|$|\s)/;
+/** The formatting marks on lines from..to (only titles and paragraphs; lists, code and the rest keep Obsidian's own behaviour). */
+function fmtMarks(state: EditorState, from: number, to: number): FmtMark[] {
+  const a = state.doc.lineAt(from).number, z = state.doc.lineAt(to).number;
+  const kinds = classify(docLines(state, z)), out: FmtMark[] = [];
+  syntaxTree(state).iterate({ from: state.doc.line(a).from, to: state.doc.line(z).to, enter: n => {
+    const m = FMT.exec(n.type.name); if (!m || n.from === n.to) return;
+    const line = state.doc.lineAt(n.from), k = kinds[line.number - 1];
+    if (!(k === 'heading' || PROSE.has(k))) return;
+    const kind = m[1] === 'strikethrough' ? 'strike' : m[1] as FmtMark['kind'];
+    let end = n.to; if (kind === 'header') while (end < line.to && state.doc.sliceString(end, end + 1) === ' ') end++;
+    if (out.some(x => x.from === n.from)) return;
+    out.push({ from: n.from, to: end, kind, partner: -1 });
+  } });
+  // Opening and closing halves alternate within a line.
+  const open = new Map<string, number>();
+  out.forEach((x, i) => {
+    if (x.kind === 'header') return;
+    const key = `${state.doc.lineAt(x.from).number}:${x.kind}`, j = open.get(key);
+    if (j === undefined) open.set(key, i); else { x.partner = j; out[j].partner = i; open.delete(key); }
+  });
+  return out;
+}
+const hideFmt = Decoration.replace({});
+/**
+ * Whether this editor shows a chapter is checked again on every update (not only when the text changes): a brand-new
+ * chapter's editor opens a moment before the story knows the file is one of its chapters.
+ */
+const fmtHidden = (host: EditorHost) => ViewPlugin.fromClass(class {
+  decorations: DecorationSet = Decoration.none; chapter = false;
+  constructor(view: EditorView) { this.chapter = this.isChapter(view); this.decorations = this.build(view); }
+  isChapter(view: EditorView) { const f = fileOf(view.state); return !!(f && host.isChapter(f) && host.projectFor(f.path)) || inManuscript(view); }
+  update(u: ViewUpdate) {
+    const now = this.isChapter(u.view), was = this.chapter; this.chapter = now;
+    if (now !== was || u.docChanged || u.viewportChanged || syntaxTree(u.startState) !== syntaxTree(u.state)
+      || u.transactions.some(t => t.effects.some(e => e.is(refreshEffect)))) this.decorations = this.build(u.view);
+  }
+  build(view: EditorView) {
+    if (!this.chapter) return Decoration.none;
+    const b = new RangeSetBuilder<Decoration>();
+    for (const { from, to } of view.visibleRanges) for (const m of fmtMarks(view.state, from, to)) b.add(m.from, m.to, hideFmt);
+    return b.finish();
+  }
+}, { decorations: v => v.decorations, provide: p => EditorView.atomicRanges.of(view => view.plugin(p)?.decorations ?? Decoration.none) });
+
+/**
+ * Hidden marks can't be broken by accident: Backspace or Delete next to one removes the letter beyond it instead,
+ * deleting a selection keeps half of a pair whose other half stays, and typing at the very start of a title goes after its #.
+ */
+const keepFmt = EditorState.transactionFilter.of(tr => {
+  if (!tr.docChanged) return tr;
+  const del = tr.isUserEvent('delete'), input = tr.isUserEvent('input') && !tr.isUserEvent('input.format');
+  if (!del && !input) return tr;
+  const st = tr.startState; let touched = false;
+  // Joining two paragraphs whose formatting Enter had split (…**  +  **…): the pair becomes one again.
+  let join: [number, number] | null = null, count = 0;
+  tr.changes.iterChanges((a, b, _fa, _fb, ins) => { count++; if (!ins.length && st.doc.sliceString(a, b) === '\n') join = [a, b]; });
+  if (del && count === 1 && join) {
+    const [a, b] = join as [number, number], prev = st.doc.lineAt(a).text, next = st.doc.lineAt(b).text;
+    const x = /(\*\*\*|\*\*|~~|\*)$/.exec(prev)?.[1], y = /^(\*\*\*|\*\*|~~|\*)/.exec(next)?.[1];
+    if (x && x === y && fmtMarks(st, a - x.length, a).some(m => m.to === a))
+      return { changes: { from: a - x.length, to: b + x.length }, selection: { anchor: a - x.length }, userEvent: tr.annotation(Transaction.userEvent), scrollIntoView: true };
+  }
+  const changes: { from: number; to: number; insert: string }[] = [];
+  tr.changes.iterChanges((a, b, _fb, _tb, ins) => {
+    const text = ins.toString(), marks = fmtMarks(st, a, b);
+    if (a === b) {
+      // Typing at the start of a title: after its hidden #.
+      const h = marks.find(m => m.kind === 'header' && m.from === a);
+      if (input && h) { touched = true; changes.push({ from: h.to, to: h.to, insert: text }); } else changes.push({ from: a, to: b, insert: text });
+      return;
+    }
+    const inside = (m: FmtMark) => m.from >= a && m.to <= b;
+    const keep = marks.filter(m => m.to > a && m.from < b && (m.kind === 'header' ? !(inside(m) && b >= st.doc.lineAt(m.from).to) : !(inside(m) && m.partner >= 0 && inside(marks[m.partner]))));
+    if (!keep.length) { changes.push({ from: a, to: b, insert: text }); return; }
+    touched = true;
+    // What's left once the kept marks are cut out.
+    const pieces: [number, number][] = []; let at = a;
+    for (const m of keep.sort((x, y) => x.from - y.from)) { if (m.from > at) pieces.push([at, Math.min(m.from, b)]); at = Math.max(at, m.to); }
+    if (at < b) pieces.push([at, b]);
+    if (!pieces.length && del && !text) {
+      // Only a hidden mark was in the way: remove the letter beyond it (never a line break).
+      const back = tr.isUserEvent('delete.backward'), pos = back ? Math.min(...keep.map(m => m.from)) : Math.max(...keep.map(m => m.to));
+      const c = back ? [pos - 1, pos] : [pos, pos + 1];
+      if (c[0] < 0 || c[1] > st.doc.length) return;
+      if (!/\n/.test(st.doc.sliceString(c[0], c[1]))) { changes.push({ from: c[0], to: c[1], insert: '' }); return; }
+      // A line break beyond a bold/italic mark: join the paragraphs as usual (merging a pair Enter had split). Never a title's #.
+      if (keep.some(m => m.kind === 'header')) return;
+      const mk = st.doc.sliceString(Math.min(...keep.map(m => m.from)), Math.max(...keep.map(m => m.to)));
+      const other = back ? st.doc.sliceString(Math.max(0, c[0] - mk.length), c[0]) : st.doc.sliceString(c[1], c[1] + mk.length);
+      if (other === mk) { if (back) changes.push({ from: c[0] - mk.length, to: pos + mk.length, insert: '' }); else changes.push({ from: pos - mk.length, to: c[1] + mk.length, insert: '' }); }
+      else changes.push({ from: c[0], to: c[1], insert: '' });
+      return;
+    }
+    if (!pieces.length) pieces.push([b, b]);
+    pieces.forEach(([f, t], i) => changes.push({ from: f, to: t, insert: i === 0 ? text : '' }));
+  });
+  if (!touched) return tr;
+  if (!changes.length) return [];
+  const first = changes[0], last = changes[changes.length - 1];
+  const anchor = del ? first.from : last.from + last.insert.length;
+  return { changes, selection: { anchor }, userEvent: tr.annotation(Transaction.userEvent), scrollIntoView: true };
+});
+
+/** Bold or italic on and off: around the selection, or the word under the cursor. */
+export function toggleWrap(view: EditorView, mark: '**' | '*' | '~~') {
+  const st = view.state; let { from, to } = st.selection.main;
+  if (from === to) {
+    // The word at the cursor, looking past hidden marks right beside it.
+    let w = st.wordAt(from);
+    for (let k = 1; !w && k <= 3; k++) {
+      const l = st.doc.sliceString(Math.max(0, from - k), from), r = st.doc.sliceString(from, from + k);
+      if (/^[*_~]+$/.test(l)) w = st.wordAt(from - k); if (!w && /^[*_~]+$/.test(r)) w = st.wordAt(from + k);
+    }
+    if (!w) return false; from = w.from; to = w.to;
+  }
+  const before = st.doc.sliceString(Math.max(0, from - 3), from), after = st.doc.sliceString(to, to + 3);
+  const has = mark !== '*' ? before.endsWith(mark) && after.startsWith(mark)
+    : /(^|[^*])\*$|\*\*\*$/.test(before) && /^\*($|[^*])|^\*\*\*/.test(after);
+  const n = mark.length;
+  if (has) view.dispatch({ changes: [{ from: from - n, to: from, insert: '' }, { from: to, to: to + n, insert: '' }], selection: { anchor: from - n, head: to - n }, userEvent: 'input.format' });
+  else view.dispatch({ changes: [{ from, insert: mark }, { from: to, insert: mark }], selection: { anchor: from + n, head: to + n }, userEvent: 'input.format' });
+  view.focus(); return true;
+}
+/** The line with the cursor becomes a chapter title (or back to a paragraph). */
+export function toggleTitle(view: EditorView) {
+  const st = view.state, line = st.doc.lineAt(st.selection.main.head), h = /^#{1,6} +/.exec(line.text), sm = STYLE_MARK.exec(line.text);
+  if (h) view.dispatch({ changes: { from: line.from, to: line.from + h[0].length, insert: '' }, userEvent: 'input.format' });
+  else view.dispatch({ changes: { from: line.from, to: line.from + (sm?.[0].length ?? 0), insert: '# ' }, userEvent: 'input.format' });
+  view.focus(); return true;
+}
 function kindAtCursor(state: EditorState): LineKind | undefined {
   const line = state.doc.lineAt(state.selection.main.head);
   return classify(docLines(state, line.number))[line.number - 1];
@@ -115,7 +258,19 @@ const manuscriptKeys = Prec.highest(keymap.of([
       const before = line.text.slice(0, head - line.from), after = line.text.slice(head - line.from);
       const from = line.from + before.trimEnd().length, to = head + (after.length - after.trimStart().length);
       const m = STYLE_MARK.exec(line.text), carry = m && after.trim() && head - line.from >= m[0].length ? m[0] : '';
-      view.dispatch({ changes: { from, to, insert: '\n' + carry }, selection: { anchor: from + 1 + carry.length }, scrollIntoView: true, userEvent: 'input' });
+      // Bold, italic or strikethrough running across the split is closed before it and opened again after it,
+      // so each paragraph keeps whole pairs (half a pair would show up as stray * in an export).
+      const marks = fmtMarks(view.state, line.from, line.to);
+      const spans = marks.filter(x => x.kind !== 'header' && x.partner >= 0 && x.to <= from && marks[x.partner].from >= to).sort((a, b) => a.from - b.from);
+      if (!spans.length) {
+        view.dispatch({ changes: { from, to, insert: '\n' + carry }, selection: { anchor: from + 1 + carry.length }, scrollIntoView: true, userEvent: 'input' });
+        return true;
+      }
+      const opens = spans.map(x => view.state.sliceDoc(x.from, x.to)), rest = view.state.sliceDoc(to, line.to);
+      let one = view.state.sliceDoc(line.from, from) + [...opens].reverse().join(''), two = opens.join('') + rest;
+      for (const o of opens) { if (one.endsWith(o + o)) one = one.slice(0, -2 * o.length); if (two.startsWith(o + o)) two = two.slice(2 * o.length); }
+      const reopened = Math.max(0, two.length - rest.length);
+      view.dispatch({ changes: { from: line.from, to: line.to, insert: one + '\n' + carry + two }, selection: { anchor: line.from + one.length + 1 + carry.length + reopened }, scrollIntoView: true, userEvent: 'input' });
       return true;
     },
   },
@@ -187,12 +342,14 @@ function namesPlugin(host: EditorHost) {
 /* ───────── scene bars ───────── */
 
 class SceneBar extends WidgetType {
-  constructor(readonly host: EditorHost, readonly file: TFile, readonly project: Project, readonly index: number, readonly label: string, readonly pov: string, readonly when: string, readonly whenCls: string, readonly where: string) { super(); }
-  eq(o: SceneBar) { return o.index === this.index && o.label === this.label && o.pov === this.pov && o.when === this.when && o.whenCls === this.whenCls && o.where === this.where && o.file.path === this.file.path; }
+  constructor(readonly host: EditorHost, readonly file: TFile, readonly project: Project, readonly index: number, readonly label: string, readonly pov: string, readonly when: string, readonly whenCls: string, readonly where: string, readonly afterBreak = false) { super(); }
+  eq(o: SceneBar) { return o.index === this.index && o.label === this.label && o.pov === this.pov && o.when === this.when && o.whenCls === this.whenCls && o.where === this.where && o.afterBreak === this.afterBreak && o.file.path === this.file.path; }
   toDOM() {
-    const bar = document.createElement('div');
-    bar.className = 'se-scenebar';
-    bar.contentEditable = 'false';
+    // The editor measures a block by its box, not its margins: the wrapper's padding is the space around the bar.
+    const wrap = document.createElement('div');
+    wrap.className = `se-scenebar-wrap${this.afterBreak ? ' is-after-break' : ''}`;
+    wrap.contentEditable = 'false';
+    const bar = wrap.createDiv('se-scenebar');
     const lbl = bar.createSpan({ cls: 'se-scenebar-label', text: this.label });
     const chip = (key: 'pov' | 'when' | 'where', text: string, unset: boolean, extra = '') => {
       const b = bar.createEl('button', { cls: `se-chip ${unset ? 'is-unset' : ''} ${extra}`, text });
@@ -209,7 +366,7 @@ class SceneBar extends WidgetType {
       w.addEventListener('mousedown', e => e.preventDefault());
       w.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); this.host.onSceneChip(this.file, this.project, this.index, 'where', w.getBoundingClientRect()); });
     }
-    return bar;
+    return wrap;
   }
   ignoreEvent() { return true; }
 }
@@ -227,7 +384,7 @@ function buildSceneBars(host: EditorHost, state: EditorState): DecorationSet {
   const file = fileOf(state);
   const project = file && host.isChapter(file) ? host.projectFor(file.path) : null;
   if (!file || !project) return Decoration.none;
-  const spans = M.scenesOf(docLines(state));
+  const all = docLines(state), spans = M.scenesOf(all), kinds = classify(all);
   const tl = project.cachedTimeline();
   const cached = tl?.scenes.filter(s => s.file.path === file.path) ?? [];
   const show = host.sceneBars();
@@ -238,7 +395,7 @@ function buildSceneBars(host: EditorHost, state: EditorState): DecorationSet {
     const where = project.get(entry?.where)?.name ?? '';   // where the POV character is on the map
     const label = `${M.wordsOf(project.data).scene} ${entry?.order ?? s.index + 1}`;
     const [when, whenCls] = whenText(project, s.meta, entry);
-    const widget = show ? new SceneBar(host, file, project, s.index, label, pov, when, whenCls, where) : null;
+    const widget = show ? new SceneBar(host, file, project, s.index, label, pov, when, whenCls, where, s.startLine >= 0 && kinds[s.startLine] === 'break') : null;
     if (s.metaLine != null) {
       const line = state.doc.line(s.metaLine + 1);
       b.add(line.from, line.to, widget ? Decoration.replace({ widget, block: true }) : Decoration.replace({ block: true }));
@@ -288,14 +445,42 @@ const pasteAsLines = (host: EditorHost) => EditorState.transactionFilter.of(tr =
  * The book look is attached to the editor itself, so a chapter is never drawn even for a moment as a plain note
  * (Obsidian adds the note's own classes a little later when you switch chapters).
  */
+/**
+ * The cursor of a chapter that has just opened stays out of sight until it's been put where it belongs (the first
+ * paragraph, or where you were reading), so it never shows on the title first. Clicking or typing shows it at once;
+ * a quarter of a second is the most it ever waits.
+ */
+export const caretReady = StateEffect.define<boolean>();
+const caretField = StateField.define<boolean>({
+  create: () => false,
+  update: (v, tr) => { for (const e of tr.effects) if (e.is(caretReady)) return e.value; return v; },
+});
+const caretFallback = ViewPlugin.fromClass(class {
+  timer: number | null = null;
+  constructor(readonly view: EditorView) { this.arm(); }
+  update(u: ViewUpdate) { if (u.state.field(caretField, false) === false) this.arm(); }
+  arm() {
+    if (this.timer !== null) return;
+    this.timer = window.setTimeout(() => { this.timer = null; if (this.view.state.field(caretField, false) === false) this.view.dispatch({ effects: caretReady.of(true) }); }, 250);
+  }
+  destroy() { if (this.timer !== null) window.clearTimeout(this.timer); }
+}, {
+  eventHandlers: {
+    mousedown(_e, view) { if (!view.state.field(caretField, false)) window.setTimeout(() => view.dispatch({ effects: caretReady.of(true) })); },
+    keydown(_e, view) { if (!view.state.field(caretField, false)) view.dispatch({ effects: caretReady.of(true) }); },
+  },
+});
+/** Show (or hide again) the cursor of the editor in a view. */
+export function setCaretReady(view: EditorView, on: boolean) { if (view.state.field(caretField, false) !== on) view.dispatch({ effects: caretReady.of(on) }); }
+
 const editorLook = (host: EditorHost) => EditorView.editorAttributes.of(view => {
   const f = fileOf(view.state), p = f && host.isChapter(f) ? host.projectFor(f.path) : null;
   if (!p) return null;
   const vars = lookVars(p.data.look, true, host.zoom());
-  return { class: `manuscript se-chapter-ed${p.data.look.paper ? ' se-paper-ed' : ''}`, style: Object.entries(vars).map(([k, v]) => `${k}: ${v}`).join('; ') };
+  return { class: `manuscript se-chapter-ed${p.data.look.paper ? ' se-paper-ed' : ''}${view.state.field(caretField, false) ? ' se-caret-ready' : ''}`, style: Object.entries(vars).map(([k, v]) => `${k}: ${v}`).join('; ') };
 });
 
 export function storyEditorExtensions(host: EditorHost): Extension[] {
-  return [editorLook(host), manuscriptLines, manuscriptKeys, styleMarkField, keepMarks, pasteAsLines(host), namesPlugin(host), sceneBarsField(host), tracker(host)];
+  return [caretField, caretFallback, editorLook(host), manuscriptLines, manuscriptKeys, styleMarkField, keepMarks, fmtHidden(host), keepFmt, pasteAsLines(host), namesPlugin(host), sceneBarsField(host), tracker(host)];
 }
 export function refreshEditors() { for (const v of editors) { v.dispatch({ effects: v.scrollSnapshot ? [refreshEffect.of(null), v.scrollSnapshot()] : refreshEffect.of(null) }); } }

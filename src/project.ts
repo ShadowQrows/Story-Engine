@@ -651,6 +651,9 @@ export class Project extends Events {
   async deleteChapter(f: TFile) {
     const path = f.path, text = await this.app.vault.read(f), name = this.chapterTitle(f);
     this.checkpoint({ undo: () => this.restoreNote(path, text), redo: async () => { const g = this.app.vault.getAbstractFileByPath(path); if (g instanceof TFile && await this.app.vault.read(g) === text) await this.app.fileManager.trashFile(g); }, what: `deleting ${name}` });
+    // A tab showing it moves to the chapter before it (or after, for the first) instead of closing.
+    const list = this.chapters(), i = list.findIndex(c => c.path === path), next = list[i - 1] ?? list[i + 1];
+    if (next) for (const l of this.app.workspace.getLeavesOfType('markdown')) if (l.view instanceof MarkdownView && l.view.file?.path === path) await l.openFile(next);
     await this.app.fileManager.trashFile(f);
     this.invalidateScenes();
   }

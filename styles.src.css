@@ -35,6 +35,9 @@
   font-size: var(--se-size);
   color: var(--se-color);
 }
+/* Lines break like the book: a space at the end of a line hangs past the edge (the editor normally counts it,
+   which pushed a word that just fits onto the next line, so editing and reading broke lines differently). */
+.manuscript .cm-content { white-space: pre-wrap !important; word-break: normal !important; overflow-wrap: break-word !important; line-break: auto !important; }
 .manuscript .inline-title,
 .manuscript .metadata-container,
 .manuscript .metadata-properties-heading { display: none !important; }
@@ -66,7 +69,11 @@
 /* Drop cap on the first paragraph of a chapter. */
 .manuscript .cm-line.mm-dropcap,
 .manuscript p.mm-dropcap { text-indent: 0; display: flow-root; }
-.manuscript .mm-dropcap::first-letter {
+/* Reading view: the paragraph's first letter. Editing: the first letter you can see is marked by the plugin
+   (hidden marks such as ** or a style marker at the start of the line would stop ::first-letter from working). */
+.manuscript p.mm-dropcap::first-letter,
+.manuscript .cm-line.mm-dropcap:not(.mm-dc-line)::first-letter,
+.manuscript .cm-line.mm-dropcap .mm-dc {
   float: left;
   font-family: var(--mm-dropcap-font);
   font-size: var(--mm-dropcap-size);
@@ -443,7 +450,10 @@ body.se-awaiting .se-name { cursor: copy; }
 .view-content:has(> .se-chapters-btn) { position: relative; }
 .se-chapters-btn { position: absolute; left: 12px; top: 8px; z-index: 30; width: 30px; height: 30px; padding: 0 !important; display: grid !important; place-items: center; border-radius: 50% !important; background: transparent !important; box-shadow: none !important; color: var(--text-muted); }
 .se-chapters-btn:hover, .se-chapters-btn.is-active { background: var(--background-modifier-hover) !important; color: var(--text-normal); }
-.se-chapters { position: absolute; left: 12px; top: 44px; bottom: 12px; z-index: 29; width: 240px; overflow-y: auto; font-family: var(--font-interface); font-size: var(--font-ui-small); pointer-events: none; }
+.se-scene-btn { position: absolute; left: 12px; top: 44px; z-index: 30; width: 30px; height: 30px; padding: 0 !important; display: grid !important; place-items: center; border-radius: 50% !important; background: transparent !important; box-shadow: none !important; color: var(--text-muted); cursor: pointer; }
+.se-scene-btn:hover { background: var(--background-modifier-hover) !important; color: var(--text-normal); }
+@media print { .se-scene-btn { display: none !important; } }
+.se-chapters { position: absolute; left: 46px; top: 44px; bottom: 12px; z-index: 29; width: 240px; overflow-y: auto; font-family: var(--font-interface); font-size: var(--font-ui-small); pointer-events: none; }
 .se-chapters > * { pointer-events: auto; }
 .se-chapters.is-busy { opacity: .6; pointer-events: none; }
 .se-ch-inner { display: flex; flex-direction: column; background: var(--background-primary); border-radius: 8px; padding: 2px 0 6px; }
@@ -455,14 +465,15 @@ body.se-awaiting .se-name { cursor: copy; }
 .se-ch-row.is-dragging { opacity: .4; }
 .se-ch-row.is-drop-before { box-shadow: inset 0 2px 0 var(--interactive-accent); }
 .se-ch-row.is-drop-after { box-shadow: inset 0 -2px 0 var(--interactive-accent); }
-.se-ch-grip { color: var(--text-faint); cursor: grab; letter-spacing: -1px; opacity: 0; }
+/* The drag handle sits at the end of the row (shown on hover), so the numbers start right at the list's edge. */
+.se-ch-grip { order: 9; color: var(--text-faint); cursor: grab; letter-spacing: -1px; opacity: 0; }
 .se-ch-row:hover .se-ch-grip { opacity: 1; }
-.se-ch-n { width: 22px; text-align: right; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.se-ch-n { min-width: 14px; text-align: left; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .se-ch-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .se-ch-s { color: var(--text-faint); font-size: var(--font-ui-smaller); }
-.se-ch-add { align-self: flex-start; margin: 4px 0 0 30px; height: auto !important; padding: 2px 6px !important; background: transparent !important; box-shadow: none !important; border: 0 !important; color: var(--text-accent) !important; font-size: var(--font-ui-small) !important; }
+.se-ch-add { align-self: flex-start; margin: 4px 0 0 0; height: auto !important; padding: 2px 6px !important; background: transparent !important; box-shadow: none !important; border: 0 !important; color: var(--text-accent) !important; font-size: var(--font-ui-small) !important; }
 .se-ch-add:hover { text-decoration: underline; }
-.se-ch-new { margin: 4px 0 0 30px; }
+.se-ch-new { margin: 4px 6px 0 6px; }
 .se-ch-new input { width: 100%; }
 @media print { .se-chapters, .se-chapters-btn { display: none !important; } }
 
@@ -761,7 +772,7 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 .se-look-sp input.se-look-ss { width: 50px; }
 
 /* 2.10.1: the Chapters list follows Paper too */
-.se-paper .se-chapters, .se-paper .se-chapters-btn, .se-paper .se-page-zoom {
+.se-paper .se-chapters, .se-paper .se-chapters-btn, .se-paper .se-scene-btn, .se-paper .se-page-zoom {
   --background-primary: var(--se-paper-bg, #f3ecdc);
   --background-modifier-hover: color-mix(in srgb, var(--se-paper-text, #231f1a) 9%, transparent);
   --text-normal: var(--se-paper-text, #231f1a);
@@ -787,7 +798,15 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 .se-nav, .se-map .se-zoom-pct { background: #000a; padding: 2px 9px; border-radius: 11px; }
 .se-desc-edit { width: 100%; resize: vertical; font: inherit; margin: 2px 0 6px; }
 /* Obsidian lays every widget in the editor out as a full-width block from the left; the scene bar sits centred under the title instead. */
-.markdown-source-view .cm-content > .se-scenebar { display: flex !important; margin-left: auto !important; margin-right: auto !important; }
+.markdown-source-view .cm-content > .se-scenebar-wrap { display: block !important; }
+.se-scenebar-wrap { padding: 0 0 1.67em; text-indent: 0; }
+/* As much space under the bar as above it: a title leaves more room above than a scene break does. */
+.se-scenebar-wrap.is-after-break { padding-bottom: 1.15em; }
+.se-scenebar-wrap > .se-scenebar { display: flex !important; margin: 0 auto !important; }
+/* Chapters have no folding: no arrow beside the title. */
+.manuscript .cm-fold-indicator, .manuscript .heading-collapse-indicator, .manuscript .collapse-indicator { display: none !important; }
+/* The cursor stays out of sight until it's where it belongs (opening a chapter, coming back from reading). */
+.cm-editor.manuscript:not(.se-caret-ready) .cm-cursorLayer { visibility: hidden !important; }
 /* The dead stay where they died: faded and grey, with a small cross, as a landmark. */
 .se-tok.is-dead { filter: grayscale(1) brightness(.8); opacity: .65; cursor: default; }
 .se-tok.is-dead .se-f { box-shadow: none; position: relative; }
@@ -800,7 +819,7 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 .se-broken-box ul { margin: 0 0 8px; padding-left: 18px; font-size: var(--font-ui-small); }
 .se-broken-box li.is-lost { color: var(--text-muted); }
 /* Drop cap switched off: the chapter's first paragraph is an ordinary opening paragraph. */
-.se-no-dropcap .manuscript .mm-dropcap::first-letter, .se-no-dropcap.manuscript .mm-dropcap::first-letter { float: none; font-family: inherit; font-size: inherit; font-style: inherit; font-weight: inherit; line-height: inherit; margin: 0; color: inherit; }
+.se-no-dropcap .manuscript .mm-dropcap::first-letter, .se-no-dropcap.manuscript .mm-dropcap::first-letter, .se-no-dropcap .manuscript .mm-dc, .se-no-dropcap.manuscript .mm-dc { float: none; font-family: inherit; font-size: inherit; font-style: inherit; font-weight: inherit; line-height: inherit; margin: 0; color: inherit; }
 .se-look-check { display: flex; align-items: center; gap: 6px; }
 .se-look-f.is-off { opacity: .45; }
 
@@ -1001,3 +1020,11 @@ body.se-status-folded .status-bar { padding: 0 2px !important; min-height: 0; }
 .se-tlbody .se-clip { container-type: size; container-name: se-scene; }
 @container se-scene (max-height: 62px) { .se-cast { display: none; } }
 @container se-scene (max-height: 30px) { .se-clip-evs { display: none; } }
+/* Bold, Italic, Strikethrough: centred in a chapter's header, whatever else is there. */
+.view-header:has(> .se-fmt-bar) { position: relative; container-type: inline-size; container-name: se-head; }
+.se-fmt-bar { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; gap: 2px; z-index: 2; }
+.se-fmt-bar .se-fmt { width: 28px; height: 26px; padding: 0 !important; display: grid; place-items: center; }
+.se-fmt-bar .se-fmt svg { width: 16px; height: 16px; }
+/* A narrow pane: no room in the middle, so they sit just left of the other buttons instead. */
+@container se-head (max-width: 620px) { .se-fmt-bar { position: static; transform: none; order: 2; margin-right: 4px; } .view-header > .view-actions { order: 3; } }
+@media print { .se-fmt-bar { display: none !important; } }

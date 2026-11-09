@@ -50,8 +50,10 @@ export class Capture {
 
   /* ───────── entry points ───────── */
 
-  async onSelect(project: Project, file: TFile, pos: number, sel: Sel) {
+  /** A highlight in a chapter. Longer than a name (more than four words), it's left alone so it can be formatted, unless asked for (`force`). */
+  async onSelect(project: Project, file: TFile, pos: number, sel: Sel, force = false) {
     const text = sel.text.replace(/\s+/g, ' ').trim();
+    if (!force && !(this.await && this.ctx?.project === project) && text.split(' ').length > 4) return;
     const clean = text.replace(/^[“"'‘(]+|[”"'’),.;:!?]+$/g, '').replace(/['’]s$/, '');
     if (this.await && this.ctx?.project === project) return this.handleHighlight(clean, text, file, sel.rect);
     const known = project.find(clean);
